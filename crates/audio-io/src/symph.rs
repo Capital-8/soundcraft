@@ -535,7 +535,7 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
             Ok(d) => d,
             Err(SymError::DecodeError(m)) => {
                 errors += 1;
-                corrupt_packet(errors, frames, &m)?;
+                corrupt_packet(errors, frames, m)?;
                 continue;
             }
             Err(SymError::IoError(_)) => break,

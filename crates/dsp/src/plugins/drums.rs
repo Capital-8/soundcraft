@@ -163,7 +163,7 @@ fn voice_sample(v: &mut DrumVoice, kind: Kind, sr: f32, clap_gap: usize) -> f32 
         Kind::Clap => {
             // Three quick bursts then a diffuse tail.
             let burst = if v.t < clap_gap * 3 {
-                if v.t % clap_gap == 0 {
+                if v.t.is_multiple_of(clap_gap) {
                     v.amp = 1.0;
                 }
                 v.amp
