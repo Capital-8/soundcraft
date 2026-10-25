@@ -309,6 +309,18 @@ pub struct SoundApp {
     synthetic_pointer_active: bool,
     /// Cancel that press before the next egui input pass, without a release click/drop.
     cancel_synthetic_pointer: bool,
+    /// A key/text batch crossed its deadline after [`Self::raw_input_hook`] had already appended it
+    /// to the pass. Do not dispatch that stale copy through shortcuts or widgets.
+    cancel_synthetic_keys: bool,
+    /// A scroll/zoom batch crossed its deadline after [`Self::raw_input_hook`] appended it to the
+    /// pass. Removing the event is not enough: egui has already folded it into
+    /// `InputState.smooth_scroll_delta`/`zoom_delta` and its frame-to-frame wheel smoothing.
+    /// [`Self::ui`] rebuilds the pass input from [`Self::input_before_scroll`].
+    cancel_synthetic_scroll: bool,
+    /// The input state and the host's own raw input from before the hook appended a scroll/zoom
+    /// batch. Replaying that raw from here drops the batch's wheel/zoom contribution without
+    /// losing real input.
+    input_before_scroll: Option<(egui::InputState, egui::RawInput)>,
     /// The exact events (the batch plus the hover `PointerMoved`s added for it) [`Self::raw_input_hook`]
     /// appended to the retained raw input. A host such as eframe hands the hook-mutated input back on
     /// the next tick, so that copy is removed before the batch is appended again: one pending batch
@@ -493,6 +505,9 @@ impl SoundApp {
             synthetic_batch: None,
             synthetic_pointer_active: false,
             cancel_synthetic_pointer: false,
+            cancel_synthetic_keys: false,
+            cancel_synthetic_scroll: false,
+            input_before_scroll: None,
             injected_events: Vec::new(),
             injected_at: 0,
             host_keys_down: None,
@@ -1483,6 +1498,12 @@ impl SoundApp {
         // single queued key press would arrive once per hidden tick and run N times on restore.
         self.remove_injected(raw);
         self.host_keys_down = None;
+        // An expired key/scroll batch was already stripped from the retained input above. A UI
+        // pass that received it before the deadline crossed has consumed these flags; a hidden
+        // tick cannot.
+        self.cancel_synthetic_keys = false;
+        self.cancel_synthetic_scroll = false;
+        self.input_before_scroll = None;
         if std::mem::take(&mut self.cancel_synthetic_pointer) {
             // Do this before egui begins its next input/interaction pass. stop_dragging marks a
             // drag_stopped in the current snapshot; the next pass replaces it without a release.
@@ -1528,6 +1549,12 @@ impl SoundApp {
             // hook itself never mutates egui's input, so a hidden logic-only tick cannot corrupt it.
             let previous = ctx.input(|i| i.keys_down.clone());
             self.host_keys_down = Some(Self::host_keys_after(previous, &raw.events));
+        }
+        if batch.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. } | egui::Event::Zoom(_))) {
+            // Remember the pass input and the host's own raw input from before egui folds this
+            // batch into its scroll/zoom aggregates, so an expiry in `logic` can replay the host
+            // input without it.
+            self.input_before_scroll = Some((ctx.input(|i| i.clone()), raw.clone()));
         }
         let mut injected = Vec::with_capacity(batch.len() * 2);
         for e in &batch {
@@ -1585,6 +1612,50 @@ impl SoundApp {
         }
     }
 
+    /// Drop the injected copy from this pass's `InputState.events` after its gesture expired in
+    /// `logic`. Returns whether the copy is known to be gone: an empty batch, or an exact run that
+    /// was drained. On a mismatch the caller must not draw, because the stale events cannot be
+    /// identified safely.
+    fn remove_received_injected(&self, ctx: &egui::Context) -> bool {
+        let n = self.injected_events.len();
+        if n == 0 {
+            return true;
+        }
+        ctx.input_mut(|i| {
+            let Some(run) = i.events.get(self.injected_at..self.injected_at.saturating_add(n)) else { return false };
+            // egui rewrites a press's `repeat` flag before the app sees it; compare like the ack.
+            if run.iter().zip(&self.injected_events).all(|(received, sent)| Self::synthetic_event_received(sent, received)) {
+                i.events.drain(self.injected_at..self.injected_at.saturating_add(n));
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    /// Rebuild this pass's input without the expired scroll/zoom batch. egui has already folded
+    /// the batch into `InputState.smooth_scroll_delta`, `zoom_delta` and the persistent wheel
+    /// smoothing state, none of which can be undone by draining `events`. Replaying the host's own
+    /// raw input from the pre-injection state removes that contribution while keeping simultaneous
+    /// host events, held keys and pointer/touch state.
+    fn rebuild_input_without_expired_scroll(&mut self, ctx: &egui::Context) {
+        let Some((before, mut host_raw)) = self.input_before_scroll.take() else { return };
+        // `begin_pass` derives `stable_dt` from its own `requested_immediate_repaint_prev_frame`
+        // argument. Keep the real pass's value; layout reads it in this pass.
+        let stable_dt = ctx.input(|i| i.stable_dt);
+        // `ui` already moved any dropped files from this pass's raw input into `pending_drops`.
+        // Do not replay them into the raw as well, or the next pass would route them twice.
+        host_raw.dropped_files.clear();
+        let options = ctx.options(|o| o.input_options);
+        let mut fresh = before.begin_pass(host_raw, false, ctx.pixels_per_point(), options);
+        fresh.stable_dt = stable_dt;
+        ctx.input_mut(|i| *i = fresh);
+        // This real pass consumed the hook-mutated raw, so there is no retained copy left to strip.
+        // Keeping the old run would let the next hook's last-identical-run fallback eat a genuine
+        // host event that happens to match it, such as the next identical physical wheel notch.
+        self.injected_events.clear();
+    }
+
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -1609,6 +1680,43 @@ impl SoundApp {
             ctx.request_repaint();
             return;
         }
+        // A discard rerun gets a fresh `RawInput`, so it never contains the injected run. Only
+        // replay/remove when this pass really received it; otherwise a later pass would dispatch
+        // the earlier pass's host key/text events twice and roll its time back.
+        let received_injected = self.pass_received_injected(&ctx);
+        if std::mem::take(&mut self.cancel_synthetic_keys) {
+            // A key/text batch crossed its deadline in logic, after the hook had already handed it
+            // to this pass. Drop that copy before widgets, shortcuts and egui's end-of-pass
+            // quit/zoom shortcuts can execute it. A discard rerun did not receive the batch, so it
+            // has nothing to remove and must keep its own input.
+            if received_injected && !self.remove_received_injected(&ctx) {
+                // The stale copy could not be identified. Do not lay out a pass that might execute
+                // it; the next hook drops the retained raw copy.
+                ctx.request_repaint();
+                return;
+            }
+            // This real pass consumed the hook-mutated raw. Keep drawing when the stale copy was
+            // removed so unrelated host key/text events in the same pass still reach shortcuts and
+            // widgets; clearing the recorded run also stops the next hook stripping a genuine
+            // identical host event.
+            self.injected_events.clear();
+            ctx.request_repaint();
+        }
+        if std::mem::take(&mut self.cancel_synthetic_scroll) {
+            if received_injected {
+                // A scroll/zoom batch expired after the hook injected it. Rebuild this pass's input
+                // without it before widgets read scroll aggregates, then keep drawing so a
+                // simultaneous real host key, wheel or pointer event is still dispatched.
+                self.rebuild_input_without_expired_scroll(&ctx);
+            } else {
+                // The batch was not injected into this pass (for example a discarded rerun after a
+                // font-gated pass). Replaying the earlier pass's host raw would dispatch its key
+                // and text events twice and roll back this pass's time.
+                self.input_before_scroll = None;
+                self.injected_events.clear();
+                ctx.request_repaint();
+            }
+        }
         // Input preparation: remember this pass's real pointer/keyboard state, which `logic` (run
         // before `ui` in each pass and alone on hidden ticks) uses for gestures and automation.
         self.pointer_down = ctx.input(|i| i.pointer.any_down());
@@ -1623,6 +1731,11 @@ impl SoundApp {
             self.arrange_request = false;
             ctx.memory_mut(|m| m.reset_areas());
         }
+        // Capture whether this pass received the batch *before* menus and widgets run. egui widgets
+        // legitimately consume matching events from `InputState.events` (`consume_key` in docking,
+        // `DragValue` and text completion), so checking afterwards would see them missing, leave
+        // the batch pending, and inject the same edit/navigation/cut again next frame.
+        let received_synthetic = self.pass_received_synthetic(&ctx);
         shortcuts::handle(self, &ctx);
         self.sample_drop_targets.clear();
         if !self.native_menu_bar {
@@ -1648,11 +1761,13 @@ impl SoundApp {
         // The sampler's drop rects are current now, so route any captured drop in this pass.
         self.route_dropped_files();
         // The pass that actually received the injected events has already dispatched their widget
-        // side effects, even when it then asks for another layout pass. Acknowledge the batch here,
-        // before the discard check: leaving it pending would make the next host frame inject the
-        // same click/key again and run the command twice. A font-gated pass returns above, and a
-        // pass without the events never acknowledges, so those batches stay pending.
-        if self.synthetic_batch.is_some() && self.pass_received_synthetic(&ctx) {
+        // side effects, even when it then asks for another layout pass. `received_synthetic` was
+        // captured before menus and widgets, so a widget that consumed the event from InputState
+        // still counts as received. Acknowledge the batch here, before the discard check: leaving
+        // it pending would make the next host frame inject the same click/key again and run the
+        // command twice. A font-gated pass returns above, and a pass without the events never
+        // acknowledges, so those batches stay pending.
+        if self.synthetic_batch.is_some() && received_synthetic {
             let delivered = self.synthetic_batch.as_ref().map_or(0, Vec::len);
             if self.synthetic_batch.as_ref().is_some_and(|batch| batch.iter().any(|e| matches!(e, egui::Event::PointerButton { pressed: false, .. })))
             {
@@ -1726,9 +1841,11 @@ impl SoundApp {
             .collect()
     }
 
-    /// Whether this UI pass actually received the pending synthetic batch's events.
-    fn pass_received_synthetic(&self, ctx: &egui::Context) -> bool {
-        if self.synthetic_batch.is_none() || self.injected_events.is_empty() {
+    /// Whether this pass's `InputState.events` still starts with the exact injected run. This is
+    /// also valid after `expire_gestures` cleared `synthetic_batch`, when a cancel needs to know
+    /// whether replaying would address this pass or an earlier one.
+    fn pass_received_injected(&self, ctx: &egui::Context) -> bool {
+        if self.injected_events.is_empty() {
             return false;
         }
         let Some(end) = self.injected_at.checked_add(self.injected_events.len()) else { return false };
@@ -1738,6 +1855,13 @@ impl SoundApp {
                     i.events.get(self.injected_at + offset).is_some_and(|received| Self::synthetic_event_received(sent, received))
                 })
         })
+    }
+
+    /// Whether this UI pass actually received the pending synthetic batch's events. Call this
+    /// before menus and widgets: egui's `consume_key`/`consume_shortcut` remove matching events
+    /// from `InputState.events`, so a late check would miss a batch that really was dispatched.
+    fn pass_received_synthetic(&self, ctx: &egui::Context) -> bool {
+        self.synthetic_batch.is_some() && self.pass_received_injected(ctx)
     }
 
     /// Load dropped audio into the sampler track under the drop point; leave everything else for
@@ -2922,6 +3046,141 @@ mod tests {
         assert_eq!(app.synthetic_applied_batches, 1);
     }
 
+    /// The real toolbar tempo `DragValue`/`TextEdit` consumes scripted keys from
+    /// `InputState.events` (arrow navigation), yet each scripted edit, navigation step and cut is
+    /// dispatched exactly once. A post-widget acknowledgement would miss the consumed press, keep
+    /// the batch pending and apply it again on the next frame.
+    #[test]
+    fn real_widgets_apply_a_scripted_edit_navigation_and_cut_once_despite_consuming_the_events() {
+        struct Rig {
+            ctx: egui::Context,
+            app: SoundApp,
+            shapes: Vec<egui::epaint::ClippedShape>,
+        }
+
+        impl Rig {
+            fn new() -> Self {
+                let mut engine = soundcraft_engine::Engine::default();
+                engine.execute("track.new", &json!({})).unwrap();
+                let mut rig = Self { ctx: egui::Context::default(), app: SoundApp::new(engine, None, Services::default()), shapes: Vec::new() };
+                rig.frames(4);
+                rig
+            }
+
+            fn raw(&self) -> egui::RawInput {
+                let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0));
+                egui::RawInput { screen_rect: Some(rect), ..Default::default() }
+            }
+
+            fn frame(&mut self, events: Vec<egui::Event>) {
+                let mut input = self.raw();
+                input.events = events;
+                self.app.raw_input_hook(&self.ctx, &mut input);
+                let mut out = self.ctx.run_ui(input, |ui| {
+                    self.app.logic(ui.ctx());
+                    self.app.ui(ui);
+                });
+                out.textures_delta.clear();
+                self.shapes = out.shapes;
+            }
+
+            fn frames(&mut self, n: usize) {
+                for _ in 0..n {
+                    self.frame(Vec::new());
+                }
+            }
+
+            fn synthetic(&mut self, events: Vec<egui::Event>) {
+                self.app.synthetic.extend(events);
+                self.frame(Vec::new());
+            }
+
+            fn bpm(&self) -> f64 {
+                self.app.engine.session().tempo.tempo_at_tick(0)
+            }
+
+            /// Centre of the toolbar tempo, which shows `bpm` with four decimals.
+            fn field(&self, bpm: f64) -> egui::Pos2 {
+                let text = format!("{bpm:.4}");
+                self.shapes
+                    .iter()
+                    .find_map(|c| match &c.shape {
+                        egui::Shape::Text(t) if t.galley.text() == text => Some(t.galley.rect.translate(t.pos.to_vec2()).center()),
+                        _ => None,
+                    })
+                    .expect("tempo not in the toolbar")
+            }
+
+            fn button(&mut self, at: egui::Pos2, pressed: bool) {
+                self.frame(vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ]);
+            }
+
+            fn click(&mut self, at: egui::Pos2) {
+                self.button(at, true);
+                self.button(at, false);
+                self.frames(2);
+            }
+        }
+
+        let key = |key: egui::Key, modifiers: egui::Modifiers| {
+            [
+                egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers },
+                egui::Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers },
+            ]
+        };
+        let mut rig = Rig::new();
+        let mut applied = rig.app.synthetic_applied_batches;
+
+        // Edit: typing replaces the selected tempo, and Enter commits it once.
+        let at = rig.field(120.0);
+        rig.click(at);
+        assert!(rig.ctx.egui_wants_keyboard_input(), "the real tempo TextEdit has focus");
+        rig.synthetic(vec![egui::Event::Text("98.5".into())]);
+        rig.synthetic(key(egui::Key::Enter, egui::Modifiers::NONE).to_vec());
+        rig.frames(2);
+        assert!((rig.bpm() - 98.5).abs() < 1e-9, "the scripted edit applied once: {}", rig.bpm());
+        assert!(rig.app.synthetic_batch.is_none());
+        assert_eq!(rig.app.synthetic_applied_batches, applied + 2);
+        applied = rig.app.synthetic_applied_batches;
+
+        // Navigation: the focused DragValue consumes ArrowUp out of InputState.events.
+        rig.frames(6); // The scripted gesture's pointer grace must end before a real click.
+        rig.click(rig.field(98.5));
+        assert!(rig.ctx.egui_wants_keyboard_input(), "the real tempo DragValue is editing");
+        rig.synthetic(key(egui::Key::ArrowUp, egui::Modifiers::NONE).to_vec());
+        assert!(
+            !rig.ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, .. }))),
+            "the real DragValue consumed the injected ArrowUp press"
+        );
+        assert!(rig.app.synthetic_batch.is_none(), "the pass that let DragValue consume ArrowUp still acknowledged it");
+        let stepped = rig.bpm();
+        assert!((stepped - 98.6).abs() < 1e-9, "one scripted navigation step: {stepped}");
+        rig.frames(2);
+        assert!((rig.bpm() - stepped).abs() < 1e-9, "a later frame must not step again");
+        assert_eq!(rig.app.synthetic_applied_batches, applied + 1);
+        applied = rig.app.synthetic_applied_batches;
+
+        // Cut: select the tempo text and cut it once. The value only changes on commit, so cancel
+        // with Escape and keep the previous tempo.
+        rig.frames(6);
+        rig.click(rig.field(stepped));
+        assert!(rig.ctx.egui_wants_keyboard_input(), "the real tempo TextEdit is editing again");
+        rig.synthetic(key(egui::Key::A, egui::Modifiers { command: true, ..egui::Modifiers::NONE }).to_vec());
+        rig.synthetic(vec![egui::Event::Cut]);
+        assert!(rig.app.synthetic_batch.is_none(), "the scripted cut was acknowledged");
+        assert!(
+            !rig.shapes.iter().any(|c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text() == "98.6000")),
+            "the scripted cut removed the selected tempo text"
+        );
+        assert_eq!(rig.app.synthetic_applied_batches, applied + 2);
+        rig.synthetic(key(egui::Key::Escape, egui::Modifiers::NONE).to_vec());
+        rig.frames(2);
+        assert!((rig.bpm() - stepped).abs() < 1e-9, "cutting the edit text and cancelling leaves the tempo unchanged");
+    }
+
     /// A hidden logic-only tick has no fresh input: the last pass's pointer must not write Touch
     /// automation or leave the fader gesture stuck.
     #[test]
@@ -2963,6 +3222,47 @@ mod tests {
         assert!(app.gesture.is_none(), "visibility loss drops the transient fader gesture");
         assert_eq!(points(&app), before, "a hidden tick wrote automation from the stale pointer");
         app.run("transport.stop", json!({})).unwrap();
+    }
+
+    /// The font-gated first pass returns before layout, so it cannot have dispatched the batch
+    /// and must leave it pending for the first laid-out pass.
+    #[test]
+    fn a_font_gated_pass_does_not_ack_the_pending_synthetic_batch() {
+        let ctx = egui::Context::default();
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
+        app.synthetic.push(egui::Event::Text("x".into()));
+        let mut input = raw();
+        app.raw_input_hook(&ctx, &mut input);
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(!app.fonts_ready, "the first pass installs fonts but does not lay out");
+        assert!(app.synthetic_batch.is_some(), "the font gate returns before the acknowledgement");
+        assert_eq!(app.synthetic_applied_batches, 0);
+        // The next hook offers the same batch to the first laid-out pass, which applies it once.
+        let mut input = raw();
+        app.raw_input_hook(&ctx, &mut input);
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(app.fonts_ready);
+        assert!(app.synthetic_batch.is_none());
+        assert_eq!(app.synthetic_applied_batches, 1);
+        // And the following frame must not replay it.
+        let mut input = raw();
+        app.raw_input_hook(&ctx, &mut input);
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert_eq!(app.synthetic_applied_batches, 1);
     }
 
     /// A settled pass that never received the injected events (for example a forced second pass

@@ -305,6 +305,27 @@ pub(crate) fn expire_gestures(app: &mut SoundApp) {
     if !app.gesture_acks.iter().any(|ack| now >= ack.deadline) {
         return;
     }
+    // A batch that the hook already appended to a pass may still be sitting in that pass's
+    // `InputState`. Mark it so `ui` drops it before shortcuts or widgets dispatch it.
+    if !app.injected_events.is_empty() {
+        let scroll = app
+            .synthetic_batch
+            .as_ref()
+            .is_some_and(|batch| batch.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. } | egui::Event::Zoom(_))));
+        let keys = app.synthetic_batch.as_ref().is_some_and(|batch| {
+            batch
+                .iter()
+                .any(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_)))
+        });
+        if scroll {
+            // Removing a wheel/zoom event alone would leave egui's per-pass aggregates and its
+            // frame-to-frame wheel smoothing carrying the expired gesture. `ui` replays the host
+            // input from the pre-injection state instead.
+            app.cancel_synthetic_scroll = app.input_before_scroll.is_some();
+        } else if keys {
+            app.cancel_synthetic_keys = true;
+        }
+    }
     app.synthetic.clear();
     app.synthetic_batch = None;
     if std::mem::take(&mut app.synthetic_pointer_active) {
@@ -1265,6 +1286,352 @@ mod tests {
             assert!(a.engine.session().track(kick).unwrap().mixer.mute, "a completed click still works normally");
             assert!(!a.synthetic_pointer_active && !a.cancel_synthetic_pointer);
         }
+    }
+
+    #[test]
+    fn a_timed_out_scripted_key_after_the_hook_does_not_run_and_the_next_key_works() {
+        let (mut a, ctx) = (app(), egui::Context::default());
+        a.advance_test_clock(Duration::ZERO);
+        warm(&mut a, &ctx);
+        a.run("track.new", json!({"count": 1, "format": "stereo"})).unwrap();
+        let depth = a.engine.undo_history().len();
+        assert!(depth > 0, "the test needs an undoable edit");
+        let applied = a.synthetic_applied_batches;
+        let quickpunch = a.engine.session().edit.quickpunch;
+        let (req, reply) = ControlRequest::new("ui.key", json!({"key": "z", "cmd": true}));
+        assert!(handle(&mut a, &ctx, &req).is_none());
+        let mut raw = raw_input(800.0, 600.0, 8192);
+        // A real, unrelated shortcut in the same pass must still be dispatched after the expired
+        // scripted batch is removed.
+        let command_shift = egui::Modifiers { command: true, shift: true, ..egui::Modifiers::NONE };
+        raw.events.push(egui::Event::Key { key: egui::Key::P, physical_key: None, pressed: true, repeat: false, modifiers: command_shift });
+        raw.events.push(egui::Event::Key { key: egui::Key::P, physical_key: None, pressed: false, repeat: false, modifiers: command_shift });
+        a.raw_input_hook(&ctx, &mut raw);
+        assert!(a.synthetic_batch.is_some(), "the key batch waits for a UI pass");
+
+        // The deadline crosses after the hook handed the key to egui but before logic and widgets.
+        a.advance_test_clock(Duration::from_secs(16));
+        let mut out = ctx.run_ui(raw, |ui| {
+            a.logic(ui.ctx());
+            a.ui(ui);
+        });
+        out.textures_delta.clear();
+        let canceled = reply.try_recv().expect("one cancellation reply");
+        assert_eq!(canceled["ok"], false, "{canceled}");
+        assert!(a.synthetic_batch.is_none(), "the expired batch is dropped");
+        assert_eq!(a.synthetic_applied_batches, applied, "an expired batch is not delivered");
+        assert_eq!(a.engine.undo_history().len(), depth, "the expired key must not run its shortcut");
+        assert_eq!(a.engine.session().edit.quickpunch, !quickpunch, "a simultaneous host shortcut still runs");
+        assert!(!a.cancel_synthetic_keys);
+        assert!(
+            ctx.input(|i| !i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Z, .. }))),
+            "the expired key is gone from the pass, not left for widgets or end-of-pass shortcuts"
+        );
+        let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192));
+        assert_eq!(a.engine.undo_history().len(), depth, "a later frame must not replay it");
+
+        // A fresh gesture after the timeout still works and runs exactly once.
+        let (req, reply) = ControlRequest::new("ui.key", json!({"key": "z", "cmd": true}));
+        assert!(handle(&mut a, &ctx, &req).is_none());
+        deliver_gestures(&mut a, &ctx);
+        assert_eq!(reply.try_recv().unwrap()["ok"], true);
+        assert_eq!(a.engine.undo_history().len(), depth - 1, "a completed key still undoes exactly once");
+    }
+
+    fn view(a: &SoundApp) -> (f64, i64, f32) {
+        let zoom = a.engine.session().edit.zoom;
+        (zoom.samples_per_px, zoom.scroll, a.edit_layout.scroll_y)
+    }
+
+    fn timeline_center(a: &SoundApp) -> egui::Pos2 {
+        let [x0, y0, x1, y1] = a.edit_layout.timeline;
+        pos2((x0 + x1) * 0.5, (y0 + y1) * 0.5)
+    }
+
+    fn host_key(key: egui::Key, pressed: bool) -> egui::Event {
+        egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE }
+    }
+
+    /// The same physical wheel notch `ui.scroll {dy:-30, unit:"line", steps:1}` queues.
+    fn host_line_wheel(dy: f32) -> egui::Event {
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, dy),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// A wheel batch that expires after the hook already handed it to egui must not scroll. Draining
+    /// its event is not enough: egui has folded it into `smooth_scroll_delta` and the wheel smoothing
+    /// state that continues on later frames. The pass input is replayed from before the injection, so
+    /// the stale notch is gone while a simultaneous host key still arrives and later input still works.
+    #[test]
+    fn a_timed_out_scripted_scroll_after_the_hook_does_not_scroll_or_keep_smoothing() {
+        let (mut a, ctx) = (app(), egui::Context::default());
+        a.advance_test_clock(Duration::ZERO);
+        warm(&mut a, &ctx);
+        // Make the track area overflow so a real wheel would actually move the view.
+        a.run("track.new", json!({"count": 20, "format": "stereo"})).unwrap();
+        warm(&mut a, &ctx);
+        let at = timeline_center(&a);
+        let before = view(&a);
+
+        let (req, reply) = ControlRequest::new("ui.scroll", json!({"x": at.x, "y": at.y, "dy": -30.0, "unit": "line", "steps": 1}));
+        assert!(handle(&mut a, &ctx, &req).is_none(), "the reply waits for delivery");
+        let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192)); // the hover move is its own batch
+        assert!(a.synthetic_batch.is_none());
+        assert_eq!(a.synthetic.len(), 1, "the wheel event is next");
+
+        let mut raw = raw_input(800.0, 600.0, 8192);
+        raw.events.push(host_key(egui::Key::F24, true));
+        a.raw_input_hook(&ctx, &mut raw);
+        assert!(a.synthetic_batch.as_ref().is_some_and(|b| b.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. }))));
+        assert!(a.input_before_scroll.is_some(), "the pre-injection input was saved for a possible expiry");
+
+        // The deadline crosses after the hook handed the wheel to egui but before logic and widgets.
+        a.advance_test_clock(Duration::from_secs(16));
+        let mut out = ctx.run_ui(raw, |ui| {
+            a.logic(ui.ctx());
+            a.ui(ui);
+        });
+        out.textures_delta.clear();
+
+        let canceled = reply.try_recv().expect("one cancellation reply");
+        assert_eq!(canceled["ok"], false, "{canceled}");
+        assert!(a.synthetic_batch.is_none(), "the expired batch is dropped");
+        assert!(!a.cancel_synthetic_scroll);
+        assert_eq!(view(&a), before, "the expired wheel must not scroll");
+        assert!(ctx.input(|i| i.keys_down.contains(&egui::Key::F24)), "a host key pressed in the same pass survives");
+        assert!(
+            ctx.input(|i| i.raw.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::F24, pressed: true, .. }))),
+            "the host key event is kept in the pass input"
+        );
+        assert!(
+            !ctx.input(|i| i.raw.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. }))),
+            "the expired wheel is gone from the pass input"
+        );
+        assert!(
+            !ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. }))),
+            "no wheel event reaches widgets or egui's aggregates"
+        );
+
+        // Its smoothing state must not keep scrolling in later frames either.
+        let mut release = raw_input(800.0, 600.0, 8192);
+        release.events.push(host_key(egui::Key::F24, false));
+        let _ = frame(&mut a, &ctx, release);
+        assert!(!ctx.input(|i| i.keys_down.contains(&egui::Key::F24)), "the host release still applies");
+        for _ in 0..12 {
+            let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192));
+        }
+        assert_eq!(view(&a), before, "canceling cannot leave egui smoothing the stale notch");
+
+        // The control chain is not wedged and the next gesture applies exactly once.
+        let (req, reply) = ControlRequest::new("ui.zoom", json!({"x": at.x, "y": at.y, "factor": 4.0, "steps": 1}));
+        assert!(handle(&mut a, &ctx, &req).is_none());
+        let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192)); // hover move
+        deliver_gestures(&mut a, &ctx);
+        assert_eq!(reply.try_recv().unwrap()["ok"], true);
+        let after = view(&a);
+        assert!((after.0 * 4.0 / before.0 - 1.0).abs() < 1e-4, "a later zoom works once: {} -> {}", before.0, after.0);
+        for _ in 0..6 {
+            let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192));
+        }
+        assert!((view(&a).0 - after.0).abs() < 1e-9, "the later zoom is not replayed");
+    }
+
+    /// The same late expiry for a pinch `Zoom` event: no view change, a simultaneous host key is
+    /// kept, and a fresh zoom afterwards scales the view exactly once.
+    #[test]
+    fn a_timed_out_scripted_zoom_after_the_hook_does_not_zoom_and_the_next_zoom_works_once() {
+        let (mut a, ctx) = (app(), egui::Context::default());
+        a.advance_test_clock(Duration::ZERO);
+        warm(&mut a, &ctx);
+        let at = timeline_center(&a);
+        let before = view(&a);
+
+        let (req, reply) = ControlRequest::new("ui.zoom", json!({"x": at.x, "y": at.y, "factor": 4.0, "steps": 1}));
+        assert!(handle(&mut a, &ctx, &req).is_none(), "the reply waits for delivery");
+        let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192)); // the hover move is its own batch
+        assert!(a.synthetic_batch.is_none());
+        assert_eq!(a.synthetic.len(), 1, "the zoom event is next");
+
+        let mut raw = raw_input(800.0, 600.0, 8192);
+        raw.events.push(host_key(egui::Key::F24, true));
+        a.raw_input_hook(&ctx, &mut raw);
+        assert!(a.synthetic_batch.as_ref().is_some_and(|b| b.iter().any(|e| matches!(e, egui::Event::Zoom(_)))));
+        a.advance_test_clock(Duration::from_secs(16));
+        let mut out = ctx.run_ui(raw, |ui| {
+            a.logic(ui.ctx());
+            a.ui(ui);
+        });
+        out.textures_delta.clear();
+
+        let canceled = reply.try_recv().expect("one cancellation reply");
+        assert_eq!(canceled["ok"], false, "{canceled}");
+        assert_eq!(view(&a), before, "the expired pinch must not zoom");
+        assert!(ctx.input(|i| i.keys_down.contains(&egui::Key::F24)), "a host key pressed in the same pass survives");
+        assert!(
+            ctx.input(|i| i.raw.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::F24, pressed: true, .. }))),
+            "the host key event is kept in the pass input"
+        );
+        assert!(!ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Zoom(_)))), "no zoom event reaches widgets or egui's aggregates");
+        assert!(!a.cancel_synthetic_scroll);
+
+        let mut release = raw_input(800.0, 600.0, 8192);
+        release.events.push(host_key(egui::Key::F24, false));
+        let _ = frame(&mut a, &ctx, release);
+        assert!(!ctx.input(|i| i.keys_down.contains(&egui::Key::F24)));
+        for _ in 0..4 {
+            let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192));
+        }
+        assert_eq!(view(&a), before, "a later frame must not replay the expired pinch");
+
+        let (req, reply) = ControlRequest::new("ui.zoom", json!({"x": at.x, "y": at.y, "factor": 4.0, "steps": 1}));
+        assert!(handle(&mut a, &ctx, &req).is_none());
+        let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192)); // hover move
+        deliver_gestures(&mut a, &ctx);
+        assert_eq!(reply.try_recv().unwrap()["ok"], true);
+        let after = view(&a);
+        assert!((after.0 * 4.0 / before.0 - 1.0).abs() < 1e-4, "a later zoom works once: {} -> {}", before.0, after.0);
+        for _ in 0..4 {
+            let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192));
+        }
+        assert!((view(&a).0 - after.0).abs() < 1e-9, "the later zoom is not replayed");
+    }
+
+    /// After a drawn pass canceled an expired wheel, the next real wheel notch is often byte-for-byte
+    /// identical to the injected one. Retaining that run would make the next hook's fallback strip
+    /// the genuine host event. The real notch must still scroll.
+    #[test]
+    fn a_fresh_identical_host_wheel_after_a_drawn_expiry_is_not_swallowed() {
+        let (mut a, ctx) = (app(), egui::Context::default());
+        a.advance_test_clock(Duration::ZERO);
+        warm(&mut a, &ctx);
+        a.run("track.new", json!({"count": 20, "format": "stereo"})).unwrap();
+        warm(&mut a, &ctx);
+        let at = timeline_center(&a);
+        let before = view(&a);
+
+        let (req, reply) = ControlRequest::new("ui.scroll", json!({"x": at.x, "y": at.y, "dy": -30.0, "unit": "line", "steps": 1}));
+        assert!(handle(&mut a, &ctx, &req).is_none());
+        let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192)); // hover move
+        let mut raw = raw_input(800.0, 600.0, 8192);
+        a.raw_input_hook(&ctx, &mut raw);
+        assert!(a.synthetic_batch.as_ref().is_some_and(|b| b.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. }))));
+
+        a.advance_test_clock(Duration::from_secs(16));
+        let mut out = ctx.run_ui(raw, |ui| {
+            a.logic(ui.ctx());
+            a.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert_eq!(reply.try_recv().expect("one cancellation reply")["ok"], false);
+        assert_eq!(view(&a), before, "the expired wheel did not scroll");
+        assert!(a.injected_events.is_empty(), "the drawn pass consumed the retained injected run");
+
+        // A genuine host notch with the exact same fields is delivered, not mistaken for that run.
+        let mut host = raw_input(800.0, 600.0, 8192);
+        host.events.push(host_line_wheel(-30.0));
+        let _ = frame(&mut a, &ctx, host);
+        for _ in 0..12 {
+            let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192));
+        }
+        assert_ne!(view(&a), before, "the fresh host wheel still scrolls after the expiry");
+    }
+
+    /// The replay snapshot starts from the pre-injection `InputState`, so a key the host held from an
+    /// earlier pass must remain down even though this pass's raw input has no new key event.
+    #[test]
+    fn a_host_key_held_across_passes_survives_a_replayed_scroll_cancel() {
+        let (mut a, ctx) = (app(), egui::Context::default());
+        a.advance_test_clock(Duration::ZERO);
+        warm(&mut a, &ctx);
+        a.run("track.new", json!({"count": 20, "format": "stereo"})).unwrap();
+        warm(&mut a, &ctx);
+        let at = timeline_center(&a);
+        let before = view(&a);
+
+        let mut held = raw_input(800.0, 600.0, 8192);
+        held.events.push(host_key(egui::Key::F24, true));
+        let _ = frame(&mut a, &ctx, held);
+        assert!(ctx.input(|i| i.key_down(egui::Key::F24)), "the host key is held before the scroll pass");
+
+        let (req, reply) = ControlRequest::new("ui.scroll", json!({"x": at.x, "y": at.y, "dy": -30.0, "unit": "line", "steps": 1}));
+        assert!(handle(&mut a, &ctx, &req).is_none());
+        let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192)); // hover move
+        let mut raw = raw_input(800.0, 600.0, 8192); // no key event: F24 is still held
+        a.raw_input_hook(&ctx, &mut raw);
+        assert!(a.synthetic_batch.as_ref().is_some_and(|b| b.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. }))));
+
+        a.advance_test_clock(Duration::from_secs(16));
+        let mut out = ctx.run_ui(raw, |ui| {
+            a.logic(ui.ctx());
+            a.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert_eq!(reply.try_recv().expect("one cancellation reply")["ok"], false);
+        assert_eq!(view(&a), before, "the expired wheel did not scroll");
+        assert!(ctx.input(|i| i.key_down(egui::Key::F24)), "the held host key survives the replay");
+
+        let mut release = raw_input(800.0, 600.0, 8192);
+        release.events.push(host_key(egui::Key::F24, false));
+        let _ = frame(&mut a, &ctx, release);
+        assert!(!ctx.input(|i| i.key_down(egui::Key::F24)), "the release still applies");
+    }
+
+    /// A scripted wheel that a widget consumed before the acknowledgement leaves the batch pending.
+    /// If the deadline then crosses in a discarded rerun, replaying the first pass's host raw would
+    /// dispatch its real Cmd+Z a second time. The later pass must not replay that input.
+    #[test]
+    fn an_expiry_in_a_discarded_pass_does_not_replay_host_events() {
+        let (mut a, ctx) = (app(), egui::Context::default());
+        a.advance_test_clock(Duration::ZERO);
+        warm(&mut a, &ctx);
+        a.run("track.new", json!({"count": 1, "format": "stereo"})).unwrap();
+        warm(&mut a, &ctx);
+        let depth = a.engine.undo_history().len();
+        assert!(depth > 0, "the test needs an undoable edit");
+        let at = timeline_center(&a);
+
+        let (req, reply) = ControlRequest::new("ui.scroll", json!({"x": at.x, "y": at.y, "dy": -30.0, "unit": "line", "steps": 1}));
+        assert!(handle(&mut a, &ctx, &req).is_none());
+        let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192)); // hover move
+        let mut raw = raw_input(800.0, 600.0, 8192);
+        let command = egui::Modifiers { command: true, ..egui::Modifiers::NONE };
+        raw.events.push(egui::Event::Key { key: egui::Key::Z, physical_key: None, pressed: true, repeat: false, modifiers: command });
+        raw.events.push(egui::Event::Key { key: egui::Key::Z, physical_key: None, pressed: false, repeat: false, modifiers: command });
+        a.raw_input_hook(&ctx, &mut raw);
+        assert!(a.synthetic_batch.as_ref().is_some_and(|b| b.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. }))));
+
+        let mut passes = 0;
+        let mut out = ctx.run_ui(raw, |ui| {
+            passes += 1;
+            if passes == 2 {
+                // The deadline crosses only on the rerun, after the first pass ran its host shortcut.
+                a.advance_test_clock(Duration::from_secs(16));
+            }
+            a.logic(ui.ctx());
+            if passes == 1 {
+                // Another widget consumed the injected wheel from the pass input, so the batch is
+                // still pending when the first pass asks for a discard.
+                ui.ctx().input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::MouseWheel { .. })));
+                ui.ctx().request_discard("discard the pass whose wheel another widget consumed");
+            }
+            a.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(passes >= 2, "the regression must actually force a discarded pass");
+        assert_eq!(reply.try_recv().expect("one cancellation reply")["ok"], false);
+        assert_eq!(a.engine.undo_history().len(), depth - 1, "the real Cmd+Z ran once, not again on the rerun");
+        assert!(a.injected_events.is_empty());
+        assert!(a.input_before_scroll.is_none());
+        assert!(a.synthetic_batch.is_none());
+        assert!(
+            !ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. } | egui::Event::Key { key: egui::Key::Z, .. }))),
+            "the rerun neither replays the wheel nor the first pass's host key"
+        );
     }
 
     #[test]
