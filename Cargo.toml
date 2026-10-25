@@ -53,8 +53,8 @@ craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-lib
 # ui
 # 650b1c0b058017c4eb3af06d5b39586d6732e07b is the revision produced by the separate craft-libs current-main-0135
 # integration: 25da's egui-0.37 port + 6e7f's docking Workspace/DockCommand + final egui/winit
-# pins. Raw 6e7f/16fb3d46 are egui 0.36 and are not consumable here. Replace the placeholder
-# with the reviewed 40-hex revision before any Cargo command.
+# pins. Raw 6e7f/16fb3d46 contain the older egui 0.36 UI; keep this reviewed
+# immutable revision to retain the required docking APIs on egui 0.37.
 craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "650b1c0b058017c4eb3af06d5b39586d6732e07b", features = ["serde"] }
 egui = { version = "0.37" }
 eframe = { version = "0.37", default-features = false }

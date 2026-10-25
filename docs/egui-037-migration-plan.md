@@ -2,36 +2,32 @@
 
 ## Current qualification — 2026-10-25
 
-The local implementation incorporates `main` through
-`ee050db59c82316433a2bfa61ba5b8461c9339e8` on top of the retained migration base
-`6b84a4f0461f2467402eafe41dcc708c369fb045`. The historical planning and implementation
-records below describe earlier states; their path-only lock and unknown-pin statements
-are superseded by this section.
+The local implementation incorporates main through
+`541096d2cb5f96a13d5b58935e45711530471480`. Managed job
+`egui037-sound-main541-ci-20261025-0857` passed all seven stages: formatting,
+strict workspace lint, tests, doctests, assets, layering and WASM. Across 52 test
+summaries it recorded 1,420 passing executions, zero failures and one ignored.
 
-The manifest and lock now use canonical Git URLs and immutable revisions:
+The manifest and lock use canonical Git URLs and immutable revisions:
 egui `6d518fc799681571963842f95b55a6b68431b15a`,
 winit `a517b3846ee8457d84ee4975110bfda6797c44dc`,
 craft-ui `650b1c0b058017c4eb3af06d5b39586d6732e07b`, and
 craft-docpath/craft-media `16fb3d46e1eaa0d455465e4e66a3ac7b17b55bd3`.
-The lock SHA256 is `30f7e05d24323aaaa1b86873a5f917a398d945298dfc7fb7d9953e0797fcd911`.
-Its 536 common registry packages retain their checksums; the final refresh changed
-three Git source identities. Locked metadata and formatting passed. The local
-craft-ui revision still requires approved publication before a clean remote-only
-checkout can fetch it; validation uses an isolated task-scoped mirror.
+The craft-ui commit is available on GitHub; it includes the newer docking
+Workspace/DockCommand APIs required by this app. Local validation used the
+retained task-scoped Git mirror. Remote CI must independently qualify fetching
+the dependency graph.
 
-The docking port preserves SoundCraft's default side beside the session canvas when
-a saved panel anchor has disappeared. It probes recorded locations and hidden-anchor
-chains before selecting that fallback, while craft-ui still performs restoration and
-chain rewriting. Regression coverage includes a deleted anchor and a hidden floating
-chain. Full CI `egui037-soundcraft-final-tab-ci-20261025-0478` passed all seven
-stages (format, strict workspace clippy, tests, doctests, assets, layers and WASM).
-Across 52 test summaries it recorded 1,341 passes, no failures and one ignored test.
-The drag/float/close/reopen/reload workflow passed using the visible Tracks tab.
-The final restoration and fixture changes also passed an independent source review.
+The docking port preserves SoundCraft's default side beside the session canvas
+when a saved panel anchor has disappeared. It probes recorded locations and
+hidden-anchor chains before selecting that fallback. Regression coverage includes
+a deleted anchor and a hidden floating chain. Earlier drag/float/close/reopen/reload
+GUI evidence qualifies the prior candidate, not this final main reconciliation.
 
-Native X11/Wayland, Windows and macOS workflows, audio/plugin hardware, browser
-interaction and paired app performance remain acceptance gates. Publication requires
-explicit approval; every PR requires human review and human merge.
+Final-source native/browser GUI, X11/Wayland, Windows/macOS, audio/plugin hardware,
+packaging/licence coverage and paired app performance remain acceptance gates.
+Human review and human merge are required. Historical pins, counts and qualification
+claims below describe earlier states and are superseded by this section.
 
 ## Historical planning record
 

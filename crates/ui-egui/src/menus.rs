@@ -128,7 +128,7 @@ pub const AUDIOSUITE: &[(&str, &str)] = &[
     ("AudioSuite > Pitch Shift > Pitch II", "pitch_shift"),
     ("AudioSuite > Pitch Shift > Pitch Shift Legacy", "pitch_shift"),
     ("AudioSuite > Pitch Shift > Time Shift", "time_stretch"),
-    ("AudioSuite > Pitch Shift > Vari-Fi", "varispeed"),
+    ("AudioSuite > Pitch Shift > Vari-Fi", "speed_ramp"),
     ("AudioSuite > Reverb > D-Verb", "room_reverb"),
     ("AudioSuite > Delay > Mod Delay III", "mod_delay"),
     ("AudioSuite > Modulation > Sci-Fi", "ring_mod"),
@@ -166,7 +166,9 @@ const DIALOG_COMMANDS: &[&str] = &[
     "event.quantize",
     "event.transpose",
     "edit.strip_silence",
+    "clip.auto_rename",
     "clip.rename",
+    "clip.loop",
 ];
 
 /// Shared menu hierarchy for egui and native desktop hosts.
