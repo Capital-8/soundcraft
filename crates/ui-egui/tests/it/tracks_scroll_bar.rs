@@ -3,6 +3,7 @@ use egui_kittest::Harness;
 use serde_json::json;
 use soundcraft_ui_egui::{Services, SoundApp, theme::Tokens};
 
+/// Feed one harness frame through the raw-input hook before stepping, so scripted input reaches the app.
 fn step(h: &mut Harness<'_, SoundApp>) {
     let mut raw = std::mem::take(h.input_mut());
     let ctx = h.ctx.clone();

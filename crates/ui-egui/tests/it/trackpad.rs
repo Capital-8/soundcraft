@@ -12,6 +12,8 @@ struct Rig {
 }
 
 impl Rig {
+    /// A demo app with a control channel, a chosen window width and deterministic non-kinetic scrolling for exact
+    /// offset assertions.
     fn new(width: f32) -> Rig {
         let (tx, rx) = channel();
         let app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default()).with_control(rx);
@@ -27,6 +29,7 @@ impl Rig {
         r
     }
 
+    /// Run `n` frames through the raw-input hook and the app's logic and UI.
     fn frames(&mut self, n: usize) {
         for _ in 0..n {
             let mut raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(self.width, 900.0))), ..Default::default() };

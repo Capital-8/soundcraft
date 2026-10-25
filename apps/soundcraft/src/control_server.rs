@@ -27,6 +27,8 @@ const MAX_CONNECTIONS: usize = 16;
 /// on an unbounded channel.
 const MAX_QUEUED_REQUESTS: usize = MAX_CONNECTIONS;
 
+/// Bind the loopback control listener and return the request receiver. Port 0 picks a free one and the actual port is
+/// printed; bind or spawn failures are logged instead of panicking.
 pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
     let (tx, rx) = sync_channel::<ControlRequest>(MAX_QUEUED_REQUESTS);
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
@@ -56,6 +58,8 @@ impl Drop for Slot {
     }
 }
 
+/// Accept until the listener closes, admitting at most [`MAX_CONNECTIONS`] peers; excess peers get one error line.
+/// Each admitted connection is served on its own thread, releasing its slot on exit.
 fn accept_loop(listener: TcpListener, tx: SyncSender<ControlRequest>, ctx: egui::Context) {
     let open = Arc::new(AtomicUsize::new(0));
     for mut stream in listener.incoming().flatten() {
@@ -98,6 +102,8 @@ fn read_bounded_line(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -
     Ok(true)
 }
 
+/// Answer newline-delimited JSON requests for one connection: bound each line, forward it to the UI thread with a 90
+/// s reply deadline, and stop at EOF, invalid UTF-8 or a closed request queue. Bad JSON still gets an error reply.
 fn serve(stream: TcpStream, tx: SyncSender<ControlRequest>, ctx: egui::Context) {
     let Ok(read) = stream.try_clone() else { return };
     let mut out = stream;

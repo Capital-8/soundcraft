@@ -210,6 +210,7 @@ impl Default for View {
     }
 }
 
+/// Controls for name style, sort key and sort direction above the contributor table.
 fn contributors_toolbar(ui: &mut egui::Ui, v: &mut View) {
     ui.horizontal_wrapped(|ui| {
         ui.label("Show");

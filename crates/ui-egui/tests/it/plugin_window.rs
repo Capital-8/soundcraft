@@ -1,6 +1,7 @@
 use egui_kittest::Harness;
 use soundcraft_ui_egui::{Services, SoundApp};
 
+/// A plugin window taller than a short screen is clamped so its bottom remains visible.
 #[test]
 fn a_long_plugin_window_stays_on_a_short_screen() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());

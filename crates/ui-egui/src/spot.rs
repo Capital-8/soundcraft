@@ -113,6 +113,8 @@ fn recorded_at(s: &Session, time_reference: u64) -> Samples {
     i64::try_from(time_reference).unwrap_or(0).saturating_sub(s.timecode_start)
 }
 
+/// One editable Spot field: accept the entered position when it parses and lies in `-MAX_POSITION..=MAX_POSITION`,
+/// or show the formatted value when read-only.
 fn spot_field_row(ui: &mut Ui, s: &Session, d: &mut Spot, i: usize, label: &str) {
     let show = |at: Samples, f: TimeFormat| s.format_position(at, f);
     let lab = ui.label(label);

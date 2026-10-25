@@ -230,6 +230,8 @@ fn metadata(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_metadata = open;
 }
 
+/// MIDI Event List for the target clip: velocity is editable, start/pitch/length are read-only, and notes can be
+/// deleted.
 fn event_list(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_event_list;
     win(ctx, &mut open, "MIDI Event List", vec2(420.0, 360.0), |ui| {
@@ -373,6 +375,8 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_workspace = open;
 }
 
+/// Window Configurations window: capture the current UI state and restore a saved configuration after validating both
+/// dock layouts.
 fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_configurations;
     win(ctx, &mut open, "Window Configurations", vec2(320.0, 240.0), |ui| {
@@ -436,6 +440,7 @@ fn chosen_device<'a>(devices: &'a [DeviceInfo], name: Option<&str>) -> Option<&'
     name.and_then(|n| devices.iter().find(|d| d.name == n)).or_else(|| devices.iter().find(|d| d.is_default))
 }
 
+/// Device picker with a Default entry and channel counts, labelled for accessibility.
 fn device_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<String>, devices: &[DeviceInfo]) {
     let default = devices.iter().find(|d| d.is_default).map_or("none".to_string(), |d| d.name.clone());
     let shown = value.clone().unwrap_or_else(|| format!("Default ({default})"));
@@ -448,6 +453,7 @@ fn device_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<Stri
     combo.response.accessible_name(name);
 }
 
+/// Optional-number picker with a Device default entry and a unit, labelled for accessibility.
 fn number_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<u32>, options: &[u32], unit: &str) {
     let shown = value.map_or("Device default".to_string(), |v| format!("{v} {unit}"));
     let combo = egui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {

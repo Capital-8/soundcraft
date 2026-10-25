@@ -54,6 +54,8 @@ fn search_chord(m: Modifiers, mac: bool) -> bool {
     mac && m.command && m.ctrl
 }
 
+/// Dispatch global keyboard shortcuts once no text field or dialog wants input, ignoring non-scripted auto-repeats
+/// while still running a host press alongside a scripted one.
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd+= and Cmd+0 are Mix/Edit and Quantize to Grid, not egui's built-in interface zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);

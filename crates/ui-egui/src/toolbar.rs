@@ -73,6 +73,7 @@ fn draw_mode_cell(p: &egui::Painter, cell: Rect, resp: &egui::Response, t: &Toke
     }
 }
 
+/// The Shuffle, Spot, Slip and Grid mode selector with its keyboard hints and relative-grid state.
 fn edit_modes(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let ed = &app.engine.session().edit;
@@ -164,6 +165,7 @@ fn zoom_group(app: &mut SoundApp, ui: &mut Ui) {
     });
 }
 
+/// The tool selector, including Smart-tool membership and Zoom Toggle.
 fn tools(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let cur = app.engine.session().edit.tool;
@@ -230,6 +232,7 @@ fn fmt_pos(app: &SoundApp, at: i64, f: TimeFormat) -> String {
     s.format_position(at, f)
 }
 
+/// Main and sub position counters, a main-counter format menu, selection readouts and dirty/device status.
 fn counters(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let (main_fmt, sub_fmt, sel) = {
@@ -273,6 +276,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, format!("{st} · {dev}"), regular(10.0), t.text_dim);
 }
 
+/// Grid-line toggle, grid value menu and nudge value menu.
 fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let (grid, nudge, lines) = {
@@ -381,6 +385,8 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
     });
 }
 
+/// Count-off, meter and tempo readouts; the tempo value is editable in place for the tempo event at or before the
+/// playhead.
 fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let (bpm, meter, countoff, click, bars) = {

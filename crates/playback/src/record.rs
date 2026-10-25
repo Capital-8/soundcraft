@@ -486,10 +486,13 @@ mod tests {
         assert_eq!(out, [0.5, 0.0, 0.0, 0.0, -0.5]);
     }
 
+    /// Build a cpal configuration range for tests with a 64..1024-frame buffer.
     fn range(channels: u16, min: u32, max: u32, format: cpal::SampleFormat) -> cpal::SupportedStreamConfigRange {
         cpal::SupportedStreamConfigRange::new(channels, min, max, cpal::SupportedBufferSize::Range { min: 64, max: 1024 }, format)
     }
 
+    /// At the chosen rate, input selection prefers the best supported format, then more channels; a rate the device
+    /// does not offer returns `None` so the caller can fall back.
     #[test]
     fn input_config_prefers_the_best_format_then_more_channels_at_the_chosen_rate() {
         let configs = [
@@ -519,6 +522,8 @@ mod tests {
         }
     }
 
+    /// A stalled armed input, a panicking callback and a lost device all surface as `Trouble`; a quiet input that is
+    /// not recording does not.
     #[test]
     fn a_bug_a_stall_or_a_lost_device_is_trouble() {
         let shared = Arc::new(Shared::new(CaptureRing::new(64)));

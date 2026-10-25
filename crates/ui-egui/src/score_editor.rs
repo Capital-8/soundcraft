@@ -33,6 +33,8 @@ fn diatonic(pitch: u8) -> (i32, bool) {
     (oct * 7 + step, sharp)
 }
 
+/// Read-only score view for the target MIDI clip, drawing its notes as notation; notes are edited in the MIDI Editor
+/// or Event List.
 pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_score;
     if !open {

@@ -41,10 +41,12 @@ struct ScoreBudget {
 }
 
 impl ScoreBudget {
+    /// Start a scan with no expensive score attempts spent.
     fn new() -> Self {
         Self { used: 0 }
     }
 
+    /// Spend one score attempt, returning false once the per-scan budget is exhausted.
     fn take(&mut self) -> bool {
         if self.exhausted() {
             return false;
@@ -53,6 +55,7 @@ impl ScoreBudget {
         true
     }
 
+    /// Whether no attempt is left for this scan.
     fn exhausted(&self) -> bool {
         self.used >= MAX_AUDIO_SCORE_ATTEMPTS
     }
@@ -340,6 +343,9 @@ fn precheck(b: &[u8], start: usize, detected: FileFormat) -> Result<Precheck> {
     }
 }
 
+/// Skip leading ID3v2 tags, run the container size preflight, then probe with symphonia; a zero-frame FLAC found by
+/// the preflight comes back as [`Opened::Empty`] without probing. A size-checked container is refused when probing
+/// selects a different reader or one that was never checked, so incidental payload magic cannot bypass those limits.
 fn open(bytes: &[u8], detected: FileFormat) -> Result<Opened> {
     let start = skip_id3v2(bytes);
     if start > 0 && start >= bytes.len() {
@@ -580,6 +586,7 @@ mod tests {
         CODEC_ID_VORBIS,
     };
 
+    /// Build codec parameters for a test, optionally declaring a bit depth.
     fn params(codec: AudioCodecId, bits_per_sample: Option<u32>) -> AudioCodecParameters {
         let mut params = AudioCodecParameters::new();
         params.for_codec(codec);
@@ -589,6 +596,7 @@ mod tests {
         params
     }
 
+    /// Codec ids map to their reported formats, while a format detected from the container wins over the codec.
     #[test]
     fn codecs_map_to_the_reported_formats() {
         assert_eq!(format_from_codec(CODEC_ID_FLAC, FileFormat::Other), FileFormat::Flac);
@@ -600,6 +608,8 @@ mod tests {
         assert_eq!(format_from_codec(CODEC_ID_ALAC, FileFormat::Aac), FileFormat::Aac);
     }
 
+    /// PCM and FLAC keep their declared bit depth; lossy codecs report `Compressed` regardless of their decoded
+    /// width.
     #[test]
     fn sample_formats_keep_their_depth_and_lossy_marker() {
         assert_eq!(sample_format_of(&params(CODEC_ID_PCM_S16LE, Some(16))), SampleFormat::Int16);
@@ -614,13 +624,18 @@ mod tests {
         assert_eq!(sample_format_of(&params(CODEC_ID_ALAC, None)), SampleFormat::Compressed);
     }
 
+    /// Decoder options keep gapless trimming enabled so the encoder delay and padding reported by the demuxer are
+    /// removed.
     #[test]
     fn gapless_decoding_stays_enabled() {
         assert!(decoder_options().gapless);
     }
 
+    /// A complete MPEG frame header is a candidate; loose or unregistered sync pairs are rejected before scoring,
+    /// while a registered but truncated header is rejected by the reader's score after consuming a budget slot.
     #[test]
     fn only_the_readers_own_audio_markers_are_candidates() {
+        /// Whether the preflight would score `b` as an audio candidate at offset 0.
         fn candidate(b: &[u8]) -> bool {
             let mut stream = None;
             let mut budget = ScoreBudget::new();
@@ -668,6 +683,8 @@ mod tests {
         assert_eq!(budget.used, MAX_AUDIO_SCORE_ATTEMPTS);
     }
 
+    /// ID3v2 sizes are read in their 7-bit syncsafe form; consecutive tags are skipped by their declared sizes, and
+    /// the v2.3 reserved footer bit does not extend a tag.
     #[test]
     fn leading_id3_tags_are_skipped_by_their_declared_size() {
         let tag = [&b"ID3\x04\0\0\0\0\0\x05"[..], b"hello"].concat();

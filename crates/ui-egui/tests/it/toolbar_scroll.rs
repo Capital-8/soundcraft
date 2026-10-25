@@ -14,6 +14,7 @@ fn tempo(h: &egui_kittest::Harness<'_, SoundApp>) -> Option<(egui::Rect, egui::R
     })
 }
 
+/// In a narrow window the toolbar scrolls horizontally far enough to reach the tempo readout.
 #[test]
 fn a_narrow_window_scrolls_the_toolbar_to_reach_the_tempo() {
     let mut engine = soundcraft_engine::Engine::default();

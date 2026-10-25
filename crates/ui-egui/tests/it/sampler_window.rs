@@ -33,6 +33,8 @@ fn wav(secs: f32) -> Vec<u8> {
     soundcraft_audio_io::encode(&buf, &opts).unwrap()
 }
 
+/// Feed one harness frame through the raw-input hook before stepping, so dropped files and scripted input are
+/// handled.
 fn step(h: &mut Harness<'_, SoundApp>) {
     let mut raw = std::mem::take(h.input_mut());
     let ctx = h.ctx.clone();
@@ -41,6 +43,7 @@ fn step(h: &mut Harness<'_, SoundApp>) {
     h.step();
 }
 
+/// A demo app with the Keys sampler window open and six settled frames, plus that track's id.
 fn harness() -> (Harness<'static, SoundApp>, TrackId) {
     let engine = soundcraft_engine::demo::demo_engine();
     let keys = engine.session().tracks.iter().find(|t| t.name == "Keys").unwrap().id;
@@ -130,6 +133,7 @@ fn dropping_audio_without_a_path_reads_its_bytes() {
     assert_eq!(h.state().engine.session().sources.len(), before);
 }
 
+/// A non-audio drop goes to the shell exactly once and does not change the instrument or queue a sample read.
 #[test]
 fn non_audio_drops_are_left_to_the_shell() {
     let (mut h, keys) = harness();

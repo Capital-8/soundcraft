@@ -34,6 +34,9 @@ fn drag(h: &mut Harness<'_, SoundApp>, from: egui::Pos2, to: egui::Pos2) {
     h.run_steps(4);
 }
 
+/// A real panel drag, float, close and reopen keeps the recorded floating rectangle through a UI-state reload;
+/// the Trim tool and record-arm controls still work, and a floating edit panel does not cover the mix strip used
+/// after switching windows.
 #[test]
 fn real_drag_float_close_reopen_reload_retains_transport_and_mixer_commands() {
     let mut h = harness(None, 1400.0, 1.0);
@@ -286,6 +289,7 @@ fn a_panel_without_a_recorded_place_opens_beside_the_session_view() {
     assert!(h.state().ui.show_tracks_list);
 }
 
+/// A hidden panel whose saved anchor has disappeared reopens beside the session view instead of failing to restore.
 #[test]
 fn a_recorded_place_whose_anchor_is_gone_opens_beside_the_session_view() {
     use craft_ui::docking::{Action, Permissions, Placement, Zone};
@@ -313,6 +317,8 @@ fn a_recorded_place_whose_anchor_is_gone_opens_beside_the_session_view() {
     assert!(h.state().ui.show_clip_list);
 }
 
+/// Panels hidden one by one reopen into their original floating window, rebuilding the hidden-anchor chain in the
+/// process.
 #[test]
 fn panels_hidden_one_by_one_reopen_into_their_recorded_window() {
     use craft_ui::docking::{Action, Node, Permissions};

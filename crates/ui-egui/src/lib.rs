@@ -464,6 +464,8 @@ fn automation_step_due(pos: Samples, last: Samples, step: Samples) -> bool {
 }
 
 impl SoundApp {
+    /// Build an app around an engine and optional player, initialising UI, recording, autosave, control and
+    /// synthetic-input state.
     pub fn new(engine: Engine, player: Option<Player>, services: Services) -> Self {
         SoundApp {
             recent_seen: engine.path.clone(),
@@ -1225,6 +1227,8 @@ impl SoundApp {
         }
     }
 
+    /// Apply engine transport requests to the player and recorder, read back the position and refresh meters. A reset
+    /// request also clears per-document capture, edit-gesture and meter state.
     fn handle_transport(&mut self, dt: f32) {
         let reqs: Vec<TransportRequest> = std::mem::take(&mut self.engine.transport_requests);
         for r in reqs {
@@ -1456,6 +1460,7 @@ impl SoundApp {
         (elapsed as f32).clamp(0.0, 0.25)
     }
 
+    /// The app clock: a frozen test clock when set, otherwise host time shifted by the test offset.
     pub(crate) fn clock_now(&self) -> web_time::Instant {
         self.test_clock.unwrap_or_else(|| web_time::Instant::now().checked_add(self.clock_offset).unwrap_or_else(web_time::Instant::now))
     }
@@ -1478,6 +1483,7 @@ impl SoundApp {
         self.host_geometry.unwrap_or_else(|| control::CaptureGeometry::from_context(ctx))
     }
 
+    /// Remember the latest valid host viewport geometry for screenshot admission.
     fn note_host_geometry(&mut self, ctx: &egui::Context, raw: &egui::RawInput) {
         if let Some(g) = control::CaptureGeometry::from_raw(ctx, raw) {
             self.host_geometry = Some(g);
@@ -2128,6 +2134,8 @@ mod tests {
         assert!(automation_step_due(0, 1_000_000, 960));
     }
 
+    /// Write-mode passes replace automation only along the stretches they play; skipped jumps keep the old ride, and
+    /// stop writes the last point.
     #[test]
     fn a_write_pass_replaces_the_automation_it_plays_over() {
         let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
@@ -2167,6 +2175,7 @@ mod tests {
         assert_eq!(lane.value_at(10 * q, 0.0), -30.0);
     }
 
+    /// Automation pass writes and the fader ride driving them collapse into one undo step.
     #[test]
     fn a_pass_and_the_fader_ride_driving_it_are_one_undo_step() {
         let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
@@ -2419,13 +2428,16 @@ mod tests {
     struct TestDrop(std::path::PathBuf);
 
     impl egui::DroppedFile for TestDrop {
+        /// The test drop's file path; its bytes are empty because these tests only need a name.
         fn path(&self) -> &std::path::Path {
             &self.0
         }
+        /// Test drops carry no bytes; native imports only need the path in these tests.
         #[cfg(not(target_arch = "wasm32"))]
         fn bytes(&self) -> Result<Vec<u8>, String> {
             Ok(Vec::new())
         }
+        /// Test drops carry no bytes; the browser path only needs a name in these tests.
         #[cfg(target_arch = "wasm32")]
         fn bytes_async(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + '_>> {
             Box::pin(async { Ok(Vec::new()) })
@@ -3059,6 +3071,7 @@ mod tests {
         }
 
         impl Rig {
+            /// A 1600x1000 rig over a one-track session, warmed for four frames.
             fn new() -> Self {
                 let mut engine = soundcraft_engine::Engine::default();
                 engine.execute("track.new", &json!({})).unwrap();
@@ -3067,11 +3080,13 @@ mod tests {
                 rig
             }
 
+            /// A blank 1600x1000 host frame.
             fn raw(&self) -> egui::RawInput {
                 let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0));
                 egui::RawInput { screen_rect: Some(rect), ..Default::default() }
             }
 
+            /// Run one UI pass with `events`, keeping the emitted shapes for position lookups.
             fn frame(&mut self, events: Vec<egui::Event>) {
                 let mut input = self.raw();
                 input.events = events;
@@ -3084,17 +3099,20 @@ mod tests {
                 self.shapes = out.shapes;
             }
 
+            /// Advance `n` blank frames.
             fn frames(&mut self, n: usize) {
                 for _ in 0..n {
                     self.frame(Vec::new());
                 }
             }
 
+            /// Queue events as scripted input and run one frame.
             fn synthetic(&mut self, events: Vec<egui::Event>) {
                 self.app.synthetic.extend(events);
                 self.frame(Vec::new());
             }
 
+            /// The session tempo at tick 0.
             fn bpm(&self) -> f64 {
                 self.app.engine.session().tempo.tempo_at_tick(0)
             }
@@ -3111,6 +3129,7 @@ mod tests {
                     .expect("tempo not in the toolbar")
             }
 
+            /// Send a primary press or release at `at` in its own frame.
             fn button(&mut self, at: egui::Pos2, pressed: bool) {
                 self.frame(vec![
                     egui::Event::PointerMoved(at),
@@ -3118,6 +3137,7 @@ mod tests {
                 ]);
             }
 
+            /// Press and release at `at`, then let the UI settle for two frames.
             fn click(&mut self, at: egui::Pos2) {
                 self.button(at, true);
                 self.button(at, false);

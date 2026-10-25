@@ -300,6 +300,8 @@ pub fn open_session_bytes(app: &mut SoundApp, name: String, bytes: Vec<u8>) {
     }
 }
 
+/// Open the session bytes read by the browser after the save prompt, stopping transport first. A successful open
+/// marks the document replaced so pending captures cancel and reports any missing media.
 fn open_pending_session(app: &mut SoundApp) {
     let Some((name, bytes)) = app.dialogs.pending_session.take() else { return };
     if crate::bounce::refuses_session_switch(app) {
@@ -1077,6 +1079,7 @@ const SPEED_RAMP_CHOICES: [(&str, &str, f32, &[(f32, &str)]); 3] = [
     ("fades", "Fades", 1.0, &[(1.0, "On"), (0.0, "Off")]),
 ];
 
+/// Process-parameter window for the chosen AudioSuite process, with its controls and Render action.
 fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
     let Some(process) = app.ui.audiosuite.clone() else { return };
     let mut open = true;

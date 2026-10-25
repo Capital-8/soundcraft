@@ -841,6 +841,8 @@ mod selector_visual_regressions {
         }
     }
 
+    /// Write real rendered mixer fixtures when `CRAFT_UI_VISUAL_FIXTURES` is set, covering automation modes, narrow
+    /// widths and display scales.
     #[test]
     fn capture_actual_mixer_visual_fixtures() {
         let _palette = crate::theme::lock_test_palette();

@@ -13,6 +13,7 @@ fn right_click(h: &mut Harness<SoundApp>, at: Pos2) {
     h.run_steps(3);
 }
 
+/// Right-clicking a track name opens the track menu in both the Edit window and the Mix strip.
 #[test]
 fn right_click_on_a_track_name_opens_the_track_menu() {
     let mut engine = soundcraft_engine::Engine::default();

@@ -145,6 +145,7 @@ fn renderer(app: &mut SoundApp, ctx: &egui::Context) {
     app.extra.show_renderer = open;
 }
 
+/// Appearance window: interface scale, reduce-motion, theme, auto-update configuration and Reset.
 fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.extra.show_ui_customization;
     if !open {

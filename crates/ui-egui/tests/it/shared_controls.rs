@@ -132,6 +132,8 @@ fn toolbar_keyboard_activation_changes_tools_without_transport_or_marker_actions
     }
 }
 
+/// Clicking record-enable arms the track; Enter and Space on the focused button toggle arming without starting
+/// transport or recording.
 #[test]
 fn track_record_button_arms_the_track_without_starting_transport() {
     let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());

@@ -13,11 +13,13 @@ fn small(format: FileFormat, depth: BitDepth, channels: usize) -> Vec<u8> {
     encode(&b, &EncodeOptions { format, bit_depth: depth, dither: false, bwf: None }).unwrap()
 }
 
+/// An ID3v2.4 header whose syncsafe size field declares `size` bytes of tag body.
 fn id3_header(size: usize) -> [u8; 10] {
     let size = size as u32;
     [b'I', b'D', b'3', 4, 0, 0, ((size >> 21) & 0x7F) as u8, ((size >> 14) & 0x7F) as u8, ((size >> 7) & 0x7F) as u8, (size & 0x7F) as u8]
 }
 
+/// Wrap `body` in an ID3v2.4 tag.
 fn id3_tag(body: &[u8]) -> Vec<u8> {
     [&id3_header(body.len())[..], body].concat()
 }
@@ -323,6 +325,7 @@ fn an_id3_tag_before_the_audio_is_skipped_unread() {
     assert_eq!(decode(&[tag, flac].concat(), None).unwrap().1.frames(), 300);
 }
 
+/// Container magic inside an MP3 frame payload must not change detection or make probing reject the stream.
 #[test]
 fn a_valid_mp3_with_incidental_container_magic_still_probes() {
     let mut frame = vec![0u8; 417];
@@ -398,6 +401,8 @@ fn a_container_selected_without_its_size_check_is_refused() {
     assert!(matches!(decode(&f, None), Err(AudioError::Malformed(m)) if m.contains("was not size-checked")));
 }
 
+/// A zero-frame FLAC after arbitrary bytes or ID3 tags is still detected and reported as an empty stream, not a
+/// decode failure.
 #[test]
 fn zero_frame_flac_after_a_prefix_is_still_empty() {
     let flac =
@@ -416,6 +421,8 @@ fn zero_frame_flac_after_a_prefix_is_still_empty() {
     }
 }
 
+/// Build one MPEG-4 AAC-LC ADTS frame at 48 kHz stereo around `payload`, with the 13-bit length covering the 7-byte
+/// header.
 fn adts_frame(payload: &[u8]) -> Vec<u8> {
     // MPEG-4 AAC-LC, 48 kHz, stereo; the 13-bit frame length includes this 7-byte header.
     let len = 7 + payload.len();
@@ -426,6 +433,7 @@ fn adts_frame(payload: &[u8]) -> Vec<u8> {
     [&h[..], payload].concat()
 }
 
+/// False MPEG sync prefixes must not stop a following zero-frame FLAC from probing as empty.
 #[test]
 fn zero_frame_flac_after_a_false_mpeg_sync_is_still_empty() {
     let flac =
@@ -439,6 +447,7 @@ fn zero_frame_flac_after_a_false_mpeg_sync_is_still_empty() {
     }
 }
 
+/// A false MPEG sync prefix must not let malformed CAF or MP4 size fields bypass the container preflight.
 #[test]
 fn a_false_sync_does_not_bypass_container_checks() {
     let bad_caf = caf(&[
@@ -464,6 +473,7 @@ fn a_false_sync_does_not_bypass_container_checks() {
     assert!(matches!(decode(&f, None), Err(AudioError::Malformed(m)) if m.contains("larger than the file")));
 }
 
+/// Container magic inside a valid ADTS payload must not override AAC detection or make probing fail.
 #[test]
 fn a_valid_adts_stream_with_incidental_container_magic_still_probes() {
     let payload = [0u8; 400];
@@ -476,6 +486,7 @@ fn a_valid_adts_stream_with_incidental_container_magic_still_probes() {
     assert_eq!((info.format, info.sample_rate, info.channels), (FileFormat::Aac, 48_000, 2));
 }
 
+/// A later valid CAF must not excuse an earlier malformed container that the preflight or probe rejects.
 #[test]
 fn an_earlier_malformed_container_is_not_excused_by_a_later_valid_one() {
     let malformed = caf(&[caf_desc(b"aac ", 0, 1024, 2, 0), (b"kuki", 1i64 << 50, vec![0; 8])]);
@@ -487,6 +498,8 @@ fn an_earlier_malformed_container_is_not_excused_by_a_later_valid_one() {
     assert!(matches!(decode(&f, None), Err(AudioError::Malformed(m)) if m.contains("larger than the file")));
 }
 
+/// Truncated ID3 bodies, declared tag sizes beyond the file, and a complete tag with no audio after it are malformed
+/// for both probe and decode.
 #[test]
 fn truncated_or_oversized_id3_tags_are_malformed() {
     let cases = vec![[&id3_header(100)[..], b"xx"].concat(), id3_header(0x0FFF_FFFF).to_vec(), id3_tag(b"tag")];

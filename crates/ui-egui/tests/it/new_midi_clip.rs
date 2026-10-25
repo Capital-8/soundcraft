@@ -122,6 +122,7 @@ fn the_pencil_makes_no_clips_on_audio_tracks() {
     assert!(r.clips().is_empty());
 }
 
+/// Clicking the empty MIDI editor adds a clip spanning the selected bars at the insertion point and selects it.
 #[test]
 fn a_click_in_the_empty_midi_editor_adds_a_clip_at_the_insertion_point() {
     let mut r = Rig::new("instrument");

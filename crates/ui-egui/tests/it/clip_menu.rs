@@ -29,6 +29,8 @@ fn kick_clip_count(h: &Harness<'_, SoundApp>) -> usize {
     s.tracks.iter().find(|t| t.name == "Kick").map_or(0, |t| t.clips().len())
 }
 
+/// Moving the pointer from a right-clicked clip onto the menu's Delete item keeps the menu open; clicking Delete
+/// removes one Kick clip.
 #[test]
 fn clip_menu_stays_open_while_moving_onto_delete() {
     let engine = soundcraft_engine::demo::demo_engine();

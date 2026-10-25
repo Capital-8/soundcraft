@@ -368,6 +368,8 @@ pub(crate) fn arrange(app: &mut crate::SoundApp) -> Result<(), String> {
     Ok(())
 }
 
+/// Draw and edit the dock layout for the requested window, falling back to the default layout if validation or panel
+/// sync fails, then publish panel visibility, store the workspace and apply the frame's layout actions.
 pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWindow) {
     app.docking_context = Some(ui.ctx().clone());
     let t = crate::theme::Tokens::current();

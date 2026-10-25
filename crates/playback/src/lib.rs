@@ -512,6 +512,9 @@ impl Player {
         self.side.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Open the output device for `session`, trying the requested buffer size before the device default, then build
+    /// the shared player state. If no configuration starts or the device cannot open, fall back to a silent clock at
+    /// the session rate.
     fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
         let shared = Arc::new(Shared {
             position: AtomicI64::new(0),
@@ -1093,6 +1096,7 @@ mod tests {
         fn buffer_size(&self) -> Result<cpal::FrameCount, cpal::Error> {
             Ok(0)
         }
+        /// The fake stream has no usable clock; these tests do not read it.
         fn now(&self) -> cpal::StreamInstant {
             cpal::StreamInstant::from_nanos(0)
         }
@@ -1126,10 +1130,13 @@ mod tests {
         assert_eq!(won.map(|(n, _)| n), Some(2));
     }
 
+    /// Build a cpal configuration range for tests with a 64..1024-frame buffer.
     fn range(channels: u16, min: u32, max: u32, format: cpal::SampleFormat) -> cpal::SupportedStreamConfigRange {
         cpal::SupportedStreamConfigRange::new(channels, min, max, cpal::SupportedBufferSize::Range { min: 64, max: 1024 }, format)
     }
 
+    /// Rates are tried in order, so a stale configured rate falls through to the session rate; when no requested rate
+    /// is offered the caller uses the device default and resamples.
     #[test]
     fn output_config_uses_the_first_requested_rate_the_device_offers() {
         let configs = [
@@ -1148,6 +1155,8 @@ mod tests {
         assert!(pick_output_config(&configs, &[192_000], 8).is_none());
     }
 
+    /// At a supported rate, a preferred sample format wins over more channels; output stays between stereo and the
+    /// requested channel cap, and mono-only or wider devices take the default path.
     #[test]
     fn output_config_prefers_format_over_channels_and_needs_stereo_within_the_cap() {
         let configs = [range(8, 44_100, 48_000, cpal::SampleFormat::I16), range(2, 44_100, 48_000, cpal::SampleFormat::F32)];

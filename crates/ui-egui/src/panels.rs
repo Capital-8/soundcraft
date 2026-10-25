@@ -40,6 +40,7 @@ fn panel_header(ui: &mut Ui, title: &str) {
 /// the panel and the window beside it.
 const GUTTER_W: f32 = 10.0;
 
+/// Tracks and Groups panels: headers, track and group lists, and their scrollbars in the panel gutter.
 pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let full = ui.max_rect();
@@ -234,6 +235,7 @@ fn clip_rows(s: &soundcraft_model::Session, needle: &str) -> Vec<ClipRow> {
     sources.chain(clips).collect()
 }
 
+/// Clips panel with a filter and a revision-cached list of audio sources and clips.
 pub fn clip_list(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     panel_header(ui, "CLIPS");
@@ -443,6 +445,7 @@ fn big_counter(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_big_counter = open;
 }
 
+/// One recallable memory-location row: number button, editable name, time, length, kind and delete.
 fn memory_location_row(app: &mut SoundApp, ui: &mut Ui, n: u32, name: &str, loc: &str, len: &str, kind: &str) {
     if ui.button(n.to_string()).on_hover_text("Recall").clicked() {
         let _ = app.run("markers.recall", json!({"number": n}));
@@ -521,6 +524,7 @@ pub(crate) fn undo_history(app: &mut SoundApp, ui: &mut Ui) {
     });
 }
 
+/// Draw plugin windows for instrument and insert slots that still exist, removing closed ones from the list.
 fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
     let wins = app.ui.plugin_windows.clone();
     let mut keep = Vec::new();
@@ -678,6 +682,7 @@ fn eq_curve(ui: &mut Ui, id: &str, ins: &soundcraft_model::Insert) {
     ui.painter().add(egui::Shape::line(pts, Stroke::new(2.0, t.counter_text)));
 }
 
+/// About window tabs for version information, contributors and models.
 fn about(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_about;
     if !open {
@@ -730,6 +735,7 @@ fn preset_dir(app: &SoundApp, plugin: &str) -> Option<std::path::PathBuf> {
     app.preset_dir.as_ref().map(|d| d.join(crate::preset_folder_name(plugin)))
 }
 
+/// Factory default plus user presets for a plugin insert; user presets need a desktop preset directory.
 fn preset_menu(
     app: &mut SoundApp,
     ui: &mut Ui,

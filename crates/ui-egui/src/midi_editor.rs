@@ -68,6 +68,7 @@ fn is_black(p: i32) -> bool {
     matches!(p.rem_euclid(12), 1 | 3 | 6 | 8 | 10)
 }
 
+/// Draw the MIDI editor for the target clip, with an empty-state prompt that adds a clip on the selected MIDI track.
 pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     // Painter-only contents do not advance the layout. Claim the resized
     // space, including the empty state, so the dock keeps its chosen height.

@@ -43,6 +43,8 @@ pub fn separate_closed(app: &mut SoundApp) {
     app.ui.window = crate::MainWindow::Mix;
 }
 
+/// Draw the horizontal Mix window strips for visible non-video tracks, scroll one requested strip into view and open
+/// New Tracks when the space past the last strip is double-clicked.
 pub(crate) fn content(app: &mut SoundApp, ui: &mut Ui) {
     let ids: Vec<TrackId> = app.engine.session().tracks.iter().filter(|x| !x.hidden && x.kind != TrackKind::Video).map(|x| x.id).collect();
     // Per-channel peaks for multichannel meters (read once per frame).
@@ -152,6 +154,8 @@ pub(crate) fn route_popup(app: &mut SoundApp, resp: &egui::Response, id: TrackId
     egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| route_menu(app, ui, id, input));
 }
 
+/// Draw one mixer channel strip: preamp, instrument, object, insert and send sections, EQ curve, routing, fader and
+/// meters, with its interactions.
 fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapshot>, scroll_here: bool) {
     let t = Tokens::current();
     let session = app.engine.session_arc();
@@ -643,6 +647,7 @@ fn level_icon(r: Rect) -> Rect {
     Rect::from_min_max(pos2(outer.max.x - 9.0, outer.min.y + 2.0), pos2(outer.max.x - 4.0, outer.max.y - 2.0))
 }
 
+/// Draw one insert slot. Clicking a filled slot opens its plugin window; Cmd/Ctrl-click toggles bypass.
 pub(crate) fn insert_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rect) {
     let t = Tokens::current();
     let id = track.id;
@@ -976,6 +981,7 @@ pub fn plugin_info(id: &str) -> Option<&'static soundcraft_dsp::PluginInfo> {
         .or_else(|| soundcraft_au_host::plugin_info(id))
 }
 
+/// Draw one send slot: the route area picks a destination, while the level area opens or edits the send level.
 pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rect) {
     let t = Tokens::current();
     let id = track.id;
@@ -1066,6 +1072,7 @@ pub(crate) fn send_window(app: &mut SoundApp, ctx: &egui::Context) {
     ctx.data_mut(|d| d.insert_temp(busy_id, busy));
 }
 
+/// Draw the floating send window for the remembered track and slot, or close it when that send no longer exists.
 fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
     let Some((id, slot)) = app.ui.send_window else { return };
     let Some((name, send)) = app.engine.session().track(id).and_then(|t| Some((t.name.clone(), t.mixer.sends.get(slot).cloned().flatten()?))) else {
@@ -1312,6 +1319,7 @@ fn send_level_scale(ui: &mut Ui, db: f32) {
     ui.painter().line_segment([pos2(x, r.min.y), pos2(x, line_y + 3.0)], Stroke::new(2.0, t.counter_text));
 }
 
+/// Searchable bus destination list with a New Bus action for a send.
 fn send_route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, current: Option<&Route>) {
     let busses = app.engine.session().busses.clone();
     let search = MenuSearch::show(ui, egui::Id::unique(("send-bus-search", id.0, slot)), "Search buses…");
@@ -1339,6 +1347,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, cu
     }
 }
 
+/// Input or output menu: no route and buses on both, plus the main output (outputs) or inputs 1-8 (inputs).
 fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool) {
     let key = if input { "input" } else { "output" };
     let cmd = if input { "track.input" } else { "track.output" };
@@ -1412,6 +1421,8 @@ mod tests {
         assert_eq!(dragged_send_db(12.0, -50.0, false), 12.0);
     }
 
+    /// Alt-click resets a readout; a click opens its text field, and hiding the widget drops focus so the formatted
+    /// display returns.
     #[test]
     fn readouts_reset_on_alt_click_and_drop_a_field_that_lost_focus() {
         let ctx = egui::Context::default();

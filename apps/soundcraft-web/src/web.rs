@@ -137,6 +137,8 @@ impl WebShell {
         });
     }
 
+    /// Read files dropped on the browser window asynchronously: audio for an instrument track or a Sampler goes to
+    /// that sampler, while other drops are classified by extension and handled on a later frame.
     fn take_drops(&mut self, ctx: &egui::Context) {
         // In the browser a dropped file's `path()` is only its name: read its bytes instead.
         // Audio dropped on an instrument track or a Sampler window goes to its sampler instead.
@@ -207,6 +209,8 @@ impl eframe::App for WebShell {
         self.take_path_prompt(ctx);
     }
 
+    /// Forward raw input to the shared app hook so scripted gestures and host-key protection behave like the desktop
+    /// shell.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.app.raw_input_hook(ctx, raw);
     }

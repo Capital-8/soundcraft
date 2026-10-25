@@ -61,6 +61,7 @@ fn inserted(h: &Harness<SoundApp>) -> Option<String> {
     h.state().engine.session().tracks[0].mixer.inserts[0].as_ref().map(|i| i.plugin.clone())
 }
 
+/// Choosing a plugin for an empty insert inserts it and opens its window.
 #[test]
 fn picking_a_plugin_for_an_empty_insert_opens_it() {
     let (category, plugin, _) = two_effects();
@@ -71,6 +72,7 @@ fn picking_a_plugin_for_an_empty_insert_opens_it() {
     assert_eq!(h.state().ui.plugin_windows, vec![(id, 0)], "the new insert's window opened");
 }
 
+/// A plugin chosen by typing a search and pressing Enter also opens its window.
 #[test]
 fn picking_from_the_search_opens_it_too() {
     let mut h = harness(vox(), MainWindow::Mix);
@@ -85,6 +87,7 @@ fn picking_from_the_search_opens_it_too() {
     assert_eq!(h.state().ui.plugin_windows, vec![(id, 0)]);
 }
 
+/// Replacing a filled insert inserts the new plugin and opens that plugin's window.
 #[test]
 fn replacing_a_filled_insert_opens_the_new_plugin() {
     let (category, first, second) = two_effects();
@@ -98,6 +101,7 @@ fn replacing_a_filled_insert_opens_the_new_plugin() {
     assert_eq!(h.state().ui.plugin_windows, vec![(track, 0)]);
 }
 
+/// Choosing a plugin from the Edit window's insert column inserts it and opens its window.
 #[test]
 fn the_edit_windows_inserts_column_opens_it_too() {
     let (category, plugin, _) = two_effects();

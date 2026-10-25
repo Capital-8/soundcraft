@@ -38,6 +38,8 @@ fn press(h: &mut Harness<SoundApp>, at: Pos2, pressed: bool, modifiers: Modifier
     h.step();
 }
 
+/// A send's level opens its window; Alt-click resets the fader to 0 dB, dragging reaches −∞, and clicking the
+/// same send again closes the window.
 #[test]
 fn a_sends_level_opens_its_send_window() {
     let (mut h, vox) = harness();
@@ -73,6 +75,7 @@ fn a_sends_level_opens_its_send_window() {
     assert!(h.query_by_label_contains("Vox · Send").is_none());
 }
 
+/// Escape first closes a send menu or cancels level typing, then a further Escape closes the send window.
 #[test]
 fn escape_closes_the_send_window_after_menus_and_typing() {
     let (mut h, vox) = harness();

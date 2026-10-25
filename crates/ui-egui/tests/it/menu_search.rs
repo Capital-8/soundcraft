@@ -52,6 +52,8 @@ fn vox() -> soundcraft_engine::Engine {
     engine
 }
 
+/// Typing filters the insert menu immediately, a click in the search keeps it open, and arrow keys plus Enter choose
+/// the highlighted plugin.
 #[test]
 fn an_insert_menu_searches_as_soon_as_it_opens() {
     let reverbs = built_in(false, "reverb");
@@ -74,6 +76,7 @@ fn an_insert_menu_searches_as_soon_as_it_opens() {
     assert!(h.query_by_label(reverbs[0].name).is_none(), "picking closes the menu");
 }
 
+/// Reopening a menu clears its old search, Escape closes it, and Enter with no matches picks nothing.
 #[test]
 fn a_menu_opens_with_an_empty_search() {
     let mut h = harness(vox());
@@ -91,6 +94,8 @@ fn a_menu_opens_with_an_empty_search() {
     assert!(h.state().engine.session().tracks[0].mixer.inserts.iter().all(Option::is_none), "Enter without a match picks nothing");
 }
 
+/// Choosing a plugin from a category closes the menu, whether it was opened by a primary click on an empty slot or
+/// a secondary click on the now-filled slot.
 #[test]
 fn picks_without_the_search_still_close_the_menu() {
     let first = soundcraft_dsp::plugins().iter().find(|p| !p.is_instrument).unwrap();
@@ -121,6 +126,7 @@ fn picks_without_the_search_still_close_the_menu() {
     }
 }
 
+/// Typing filters an instrument menu immediately and Enter inserts the highlighted built-in instrument.
 #[test]
 fn an_instrument_menu_searches_as_soon_as_it_opens() {
     let drums = built_in(true, "drum");
@@ -138,6 +144,7 @@ fn an_instrument_menu_searches_as_soon_as_it_opens() {
     assert!(h.query_by_label(drums[0].name).is_none(), "picking closes the menu");
 }
 
+/// Send and output menus filter buses as soon as they open, and Enter routes to the highlighted bus.
 #[test]
 fn send_and_output_menus_search_buses_as_soon_as_they_open() {
     let mut engine = vox();
@@ -162,6 +169,7 @@ fn send_and_output_menus_search_buses_as_soon_as_they_open() {
     assert_eq!(h.state().engine.session().tracks[0].mixer.output, Route::Bus(bus(&h, "Verb")));
 }
 
+/// Scripted typing and Enter reach a menu search even when the host window is unfocused.
 #[test]
 fn scripted_keys_reach_the_search_with_the_window_in_the_background() {
     let plates = built_in(false, "plate");

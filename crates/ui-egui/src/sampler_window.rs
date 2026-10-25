@@ -118,6 +118,7 @@ impl SoundApp {
         self.sample_loaded(read.track, &name, r);
     }
 
+    /// Report a sampler load and open its instrument window on success, or show the failure status.
     pub(crate) fn sample_loaded(&mut self, track: TrackId, what: &str, r: Result<serde_json::Value, String>) {
         match r {
             Ok(v) => {

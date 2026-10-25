@@ -57,12 +57,14 @@ pub(crate) struct PendingShot {
 }
 
 impl PendingShot {
+    /// Send the single reply if it has not been taken; later completions are ignored.
     fn reply(&mut self, v: Value) {
         if let Some(tx) = self.reply.take() {
             let _ = tx.send(v);
         }
     }
 
+    /// Release the capture slot and send one error reply.
     fn fail(&mut self, e: impl std::fmt::Display) {
         self.slot = None;
         self.reply(err(e));
@@ -80,6 +82,8 @@ pub(crate) struct CaptureGeometry {
 }
 
 impl CaptureGeometry {
+    /// Geometry from a host raw-input frame, or `None` when the viewport has no finite, positive size. A missing
+    /// texture limit falls back to the last one egui saw instead of inventing a smaller cap.
     pub(crate) fn from_raw(ctx: &egui::Context, raw: &egui::RawInput) -> Option<Self> {
         let viewport = raw.viewports.get(&raw.viewport_id);
         let points = viewport.and_then(|v| v.inner_rect).or(raw.screen_rect)?.size();
@@ -97,6 +101,8 @@ impl CaptureGeometry {
         })
     }
 
+    /// Geometry from the context's current viewport, used outside a raw-input frame with the same scaling and
+    /// texture-limit rules.
     pub(crate) fn from_context(ctx: &egui::Context) -> Self {
         let viewport = ctx.input(|i| i.viewport().clone());
         let points = viewport.inner_rect.map_or_else(|| ctx.viewport_rect().size(), |r| r.size());
@@ -123,6 +129,7 @@ impl CaptureGeometry {
         Some([axis(self.points.x)?, axis(self.points.y)?])
     }
 
+    /// Bytes for the captured RGBA image at the expected size, with checked arithmetic.
     fn reserved_bytes(self) -> Option<usize> {
         let [w, h] = self.expected_size()?;
         w.checked_mul(h)?.checked_mul(std::mem::size_of::<egui::Color32>())
@@ -351,6 +358,8 @@ fn err(e: impl std::fmt::Display) -> Value {
     json!({"ok": false, "error": e.to_string()})
 }
 
+/// Run at most 65 queued control requests on the UI thread, stopping while a scripted gesture is undelivered so later
+/// requests observe its result. A panicking handler still gets one error reply.
 pub fn drain(app: &mut SoundApp, ctx: &egui::Context) {
     let Some(rx) = app.control_rx.take() else { return };
     let mut n = 0;
@@ -408,6 +417,7 @@ fn mods(p: &Value) -> egui::Modifiers {
     }
 }
 
+/// List engine commands plus UI commands, applying the same case-insensitive id/label filter to both.
 fn command_list(app: &mut SoundApp, p: &Value) -> Value {
     let mut list = match app.engine.execute("engine.commands", p) {
         Ok(v) => v,
@@ -425,6 +435,8 @@ fn command_list(app: &mut SoundApp, p: &Value) -> Value {
     ok(list)
 }
 
+/// Dispatch one control method to commands, inspection, menus or queued scripted input. Methods that need a UI pass
+/// return `None` and reply later; everything else returns the reply for [`drain`] to send.
 fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Option<Value> {
     let p = &req.params;
     let f = |k: &str| p.get(k).and_then(Value::as_f64).unwrap_or(0.0) as f32;
@@ -775,6 +787,8 @@ pub fn pending_shot_count(app: &SoundApp) -> usize {
     app.pending_shots.len()
 }
 
+/// Encode a color image as PNG, rejecting an inconsistent or overflowing pixel count and reserving the raw buffer
+/// fallibly.
 pub fn png_bytes(img: &egui::ColorImage) -> Result<Vec<u8>, String> {
     let [w, h] = img.size;
     let pixels = w.checked_mul(h).ok_or("image dimensions overflow")?;
@@ -794,6 +808,8 @@ pub fn png_bytes(img: &egui::ColorImage) -> Result<Vec<u8>, String> {
     Ok(out.into_inner())
 }
 
+/// Encode a completed screenshot, writing it to `path` or returning base64, and report the image size and request
+/// token.
 fn encode(img: &egui::ColorImage, path: Option<&str>, token: u64) -> Value {
     let bytes = match png_bytes(img) {
         Ok(b) => b,
@@ -838,6 +854,7 @@ mod tests {
     use std::sync::mpsc::channel;
     use std::time::Duration;
 
+    /// A host frame with the given logical size and texture limit, native scale 1.0 and no events.
     fn raw_input(width: f32, height: f32, max_texture_side: usize) -> RawInput {
         let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, height));
         let viewport = ViewportInfo { inner_rect: Some(rect), native_pixels_per_point: Some(1.0), ..Default::default() };
@@ -849,10 +866,12 @@ mod tests {
         }
     }
 
+    /// A demo-backed app with no player, for control tests.
     fn app() -> SoundApp {
         SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default())
     }
 
+    /// Run one real UI pass: feed raw input, then logic and UI, dropping texture deltas the tests do not inspect.
     fn frame(app: &mut SoundApp, ctx: &egui::Context, mut raw: RawInput) -> egui::FullOutput {
         app.raw_input_hook(ctx, &mut raw);
         let mut out = ctx.run_ui(raw, |ui| {
@@ -863,6 +882,7 @@ mod tests {
         out
     }
 
+    /// Run four frames so the first layout and demo state have settled.
     fn warm(app: &mut SoundApp, ctx: &egui::Context) {
         for _ in 0..4 {
             let _ = frame(app, ctx, raw_input(800.0, 600.0, 8192));
@@ -879,6 +899,7 @@ mod tests {
         }
     }
 
+    /// Queue one screenshot request and install its receiver for [`drain`].
     fn request(app: &mut SoundApp, path: Option<&PathBuf>) -> std::sync::mpsc::Receiver<Value> {
         let (tx, rx) = channel();
         let params = path.map_or_else(|| json!({}), |p| json!({"path": p}));
@@ -888,10 +909,12 @@ mod tests {
         reply
     }
 
+    /// First screenshot callback emitted in this frame, if any.
     fn take_callback(out: &egui::FullOutput) -> Option<egui::ScreenshotCallback> {
         take_callbacks(out).into_iter().next()
     }
 
+    /// All screenshot callbacks emitted for the root viewport in this frame.
     fn take_callbacks(out: &egui::FullOutput) -> Vec<egui::ScreenshotCallback> {
         out.viewport_output
             .get(&ViewportId::ROOT)
@@ -907,10 +930,13 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// A process-unique temporary PNG path for one test.
     fn tmp(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("soundcraft-shot-{}-{name}.png", std::process::id()))
     }
 
+    /// A completed capture writes one file and returns its dimensions once; draining the single completion leaves no
+    /// further reply.
     #[test]
     fn a_screenshot_completes_once_and_writes_one_file() {
         let (mut a, ctx) = (app(), egui::Context::default());
@@ -931,6 +957,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// A callback after the deadline sends a timeout and must not create the requested file.
     #[test]
     fn a_callback_after_the_deadline_times_out_without_writing() {
         let (mut a, ctx) = (app(), egui::Context::default());
@@ -948,6 +975,7 @@ mod tests {
         assert!(!path.exists(), "a late result must not create a file");
     }
 
+    /// Replacing the document cancels a pending capture and frees its reservation without writing a file.
     #[test]
     fn a_session_change_cancels_the_request_and_releases_its_pixels() {
         let (mut a, ctx) = (app(), egui::Context::default());
@@ -965,6 +993,7 @@ mod tests {
         assert!(!path.exists());
     }
 
+    /// Admission caps the queue at [`MAX_PENDING_SHOTS`]; the next request is refused before any capture is issued.
     #[test]
     fn admission_rejects_more_than_eight_pending_requests() {
         let (mut a, ctx) = (app(), egui::Context::default());
@@ -978,6 +1007,8 @@ mod tests {
         assert_eq!(e, "screenshot queue full");
     }
 
+    /// A single oversized viewport is refused, and aggregate accounting uses encode peak so two medium captures fit
+    /// while a third does not.
     #[test]
     fn admission_rejects_an_image_over_the_per_image_and_aggregate_budgets() {
         let (mut a, ctx) = (app(), egui::Context::default());
@@ -1002,6 +1033,7 @@ mod tests {
         assert!(e.contains("budget"), "{e}");
     }
 
+    /// A resize while a capture is in flight retries against the new geometry without writing the stale image.
     #[test]
     fn a_changed_window_retries_once_instead_of_writing_stale_pixels() {
         let (mut a, ctx) = (app(), egui::Context::default());
@@ -1025,6 +1057,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// A tiny partial image for a normal window is malformed, while a full-size image passes.
     #[test]
     fn a_truncated_image_is_malformed_not_a_successful_screenshot() {
         let tiny = ColorImage::filled([1, 1], Color32::RED);
@@ -1033,6 +1066,8 @@ mod tests {
         assert!(check_image(&full, [800, 600]).is_ok());
     }
 
+    /// The byte bound allows the same one-pixel-per-axis tolerance as the dimension check; both encoding paths
+    /// reserve more than the image itself.
     #[test]
     fn the_byte_limit_tolerates_the_same_one_pixel_as_the_dimension_check() {
         let g = CaptureGeometry { points: egui::vec2(800.0, 600.0), pixels_per_point: 1.0, max_texture_side: 8192, focused: true };
@@ -1044,6 +1079,7 @@ mod tests {
         assert!(check_image(&one_pixel_wider, [800, 600]).is_ok(), "the staleness rule accepts it, so the byte limit must too");
     }
 
+    /// A raw input without a texture limit uses egui's last known limit instead of inventing a smaller default.
     #[test]
     fn a_missing_max_texture_side_uses_the_last_known_limit() {
         let ctx = egui::Context::default();
@@ -1055,6 +1091,7 @@ mod tests {
         assert_eq!(g.max_texture_side, 8192, "a missing field must not invent the 2048 fallback");
     }
 
+    /// Zero-sized host geometry has no capturable size and is refused at admission.
     #[test]
     fn a_window_without_geometry_reports_no_capturable_size() {
         let (mut a, ctx) = (app(), egui::Context::default());
@@ -1175,6 +1212,7 @@ mod tests {
         assert_eq!(pending_shot_count(&a), 0, "no reservation or image outlives its reply");
     }
 
+    /// Overflowing dimensions and a pixel-count mismatch are errors, not allocation overflows.
     #[test]
     fn png_bytes_checks_its_dimensions_and_allocation() {
         let huge = ColorImage { size: [usize::MAX, 2], source_size: egui::vec2(0.0, 0.0), pixels: Vec::new() };
@@ -1183,6 +1221,8 @@ mod tests {
         assert!(png_bytes(&mismatched).is_err(), "a short pixel buffer is rejected before it is copied");
     }
 
+    /// The synthetic event queue and text payload are bounded; a queued text gesture is acknowledged only after a UI
+    /// pass applies it.
     #[test]
     fn control_input_queues_and_text_are_bounded() {
         let (mut a, ctx) = (app(), egui::Context::default());
@@ -1208,6 +1248,7 @@ mod tests {
         assert_eq!(v["ok"], true, "{v}");
     }
 
+    /// A path over the retained-path limit is refused before a screenshot request is queued.
     #[test]
     fn a_very_long_screenshot_path_is_refused_before_it_is_retained() {
         let (mut a, ctx) = (app(), egui::Context::default());
@@ -1219,6 +1260,8 @@ mod tests {
         assert_eq!(pending_shot_count(&a), 0);
     }
 
+    /// An expired undelivered gesture is canceled with one reply, drops its events and does not block the next
+    /// request.
     #[test]
     fn an_undelivered_gesture_is_canceled_without_wedging_the_next_request() {
         let (mut a, ctx) = (app(), egui::Context::default());
@@ -1238,6 +1281,8 @@ mod tests {
         assert!(reply.try_recv().is_err(), "handle returns the reply for drain to send");
     }
 
+    /// An expired scripted click sends no synthetic release, so it cannot click or drop, and a fresh click still
+    /// works.
     #[test]
     fn a_timed_out_consumed_press_cancels_without_clicking_and_the_next_click_works() {
         for expires_after_hook in [false, true] {
@@ -1288,6 +1333,8 @@ mod tests {
         }
     }
 
+    /// An expired scripted shortcut never reaches widgets or end-of-pass handling, while a simultaneous host shortcut
+    /// still runs and a later script succeeds.
     #[test]
     fn a_timed_out_scripted_key_after_the_hook_does_not_run_and_the_next_key_works() {
         let (mut a, ctx) = (app(), egui::Context::default());
@@ -1338,16 +1385,19 @@ mod tests {
         assert_eq!(a.engine.undo_history().len(), depth - 1, "a completed key still undoes exactly once");
     }
 
+    /// Current timeline zoom, horizontal scroll and vertical scroll, compared before and after a gesture.
     fn view(a: &SoundApp) -> (f64, i64, f32) {
         let zoom = a.engine.session().edit.zoom;
         (zoom.samples_per_px, zoom.scroll, a.edit_layout.scroll_y)
     }
 
+    /// The centre of the edit window's timeline.
     fn timeline_center(a: &SoundApp) -> egui::Pos2 {
         let [x0, y0, x1, y1] = a.edit_layout.timeline;
         pos2((x0 + x1) * 0.5, (y0 + y1) * 0.5)
     }
 
+    /// A host keyboard event with no modifiers; `pressed` selects press or release.
     fn host_key(key: egui::Key, pressed: bool) -> egui::Event {
         egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE }
     }
@@ -1634,6 +1684,8 @@ mod tests {
         );
     }
 
+    /// An expired track drag cancels without reordering tracks or dispatching a drop; a fresh drag still drops
+    /// normally.
     #[test]
     fn a_timed_out_track_drag_cancels_without_dropping_and_the_next_drag_works() {
         let (mut a, ctx) = (app(), egui::Context::default());
@@ -1672,6 +1724,8 @@ mod tests {
         assert!(!ctx.input(|i| i.pointer.any_down()));
     }
 
+    /// Wheel scrolls use line units and report `wheel`; point scrolls use trackpad phases and report `trackpad`, both
+    /// only after delivery.
     #[test]
     fn scroll_reports_the_wheel_and_trackpad_sources_after_delivery() {
         let (mut a, ctx) = (app(), egui::Context::default());

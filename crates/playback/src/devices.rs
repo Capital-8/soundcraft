@@ -71,6 +71,8 @@ pub(crate) fn device_name(d: &cpal::Device) -> Option<String> {
     d.description().ok().map(|description| description.name().to_owned())
 }
 
+/// Describe one cpal device as [`DeviceInfo`], or return `None` when its name or supported configurations cannot be
+/// read. Only formats the playback path can convert are considered.
 fn describe(d: &cpal::Device, default_name: Option<&str>, output: bool) -> Option<DeviceInfo> {
     let name = device_name(d)?;
     let ranges: Vec<cpal::SupportedStreamConfigRange> = if output {
@@ -203,10 +205,13 @@ mod tests {
         assert_eq!(serde_json::from_str::<AudioConfig>(r#"{"output":"X","unknown":1}"#).unwrap().output.as_deref(), Some("X"));
     }
 
+    /// Build a cpal configuration range for tests with a 64..1024-frame buffer.
     fn range(channels: u16, min: u32, max: u32, format: cpal::SampleFormat) -> cpal::SupportedStreamConfigRange {
         cpal::SupportedStreamConfigRange::new(channels, min, max, cpal::SupportedBufferSize::Range { min: 64, max: 1024 }, format)
     }
 
+    /// When the default sample format has no usable conversion, the same rate opens with a supported format; the
+    /// nearest channel count keeps the device open, and unsupported rates fail.
     #[test]
     fn a_default_format_the_streams_cannot_convert_uses_a_supported_one_at_the_same_rate() {
         let configs = [
@@ -239,6 +244,8 @@ mod tests {
         assert_eq!((c.sample_rate(), c.channels(), c.sample_format()), (48_000, 8, cpal::SampleFormat::F32));
     }
 
+    /// Only device-not-available and invalidated-stream errors stop playback; other cpal errors are treated as
+    /// recoverable.
     #[test]
     fn only_a_dead_stream_is_reported() {
         let error = |kind| cpal::Error::with_message(kind, "test");

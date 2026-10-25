@@ -35,6 +35,8 @@ fn set_title(ctx: &egui::Context, title: String) {
 }
 
 impl eframe::App for App {
+    /// Per-frame app logic: report audio-thread logs, run the shared app logic with the macOS menu driven around it,
+    /// then handle dropped paths, quit/close requests, window geometry, recent-list persistence and the window title.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // What the realtime audio thread logged is written here, off that thread.
         if let Some(logger) = self.1 {
@@ -86,6 +88,8 @@ impl eframe::App for App {
         };
         set_title(ctx, title);
     }
+    /// Forward raw input to the shared app hook so scripted gestures and host-key protection behave like the desktop
+    /// shell.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.0.raw_input_hook(ctx, raw);
     }

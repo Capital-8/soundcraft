@@ -209,6 +209,7 @@ fn universe(app: &mut SoundApp, ui: &mut Ui) {
     }
 }
 
+/// Three dock toggle tabs for MIDI Editor, Memory Locations and Undo History.
 fn dock_tabs(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let r = ui.max_rect();
@@ -269,6 +270,7 @@ pub(crate) fn main_area(app: &mut SoundApp, ui: &mut Ui) {
     crate::docking::minimum_body(ui, minimum, |ui| main_area_content(app, ui));
 }
 
+/// Lay out the Edit window: rulers, track headers and lanes, empty-area selection, overlays and both scrollbars.
 fn main_area_content(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let full = ui.max_rect();
@@ -447,6 +449,7 @@ fn pan(app: &mut SoundApp, px: f64) {
     }
 }
 
+/// Draw and drag the horizontal timeline scrollbar; its thumb reflects the visible sample range plus trailing space.
 fn hscrollbar(app: &mut SoundApp, ui: &mut Ui, sb: Rect, tl: Rect) {
     let t = Tokens::current();
     ui.painter().rect_filled(sb, 0.0, t.panel_bg);
@@ -568,6 +571,7 @@ fn nice_step(spp: f64, sr: f64, min_px: f64) -> i64 {
     (3600.0 * sr) as i64
 }
 
+/// Draw each enabled ruler and handle its clicks and double-clicks against the visible sample range.
 fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect, rulers: &[String]) {
     let t = Tokens::current();
     let s = app.engine.session_arc();
@@ -1012,6 +1016,8 @@ fn playlist_lanes(app: &mut SoundApp, ui: &mut Ui, track: &Track, row: Rect, mai
     }
 }
 
+/// Draw one track header: resize edge, selection and context menu, folder/options control, automation-lane toggle,
+/// name and the remaining track controls.
 fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, selected: bool, head_bg: Color32) {
     let t = Tokens::current();
     let id = track.id;
@@ -2103,6 +2109,7 @@ pub fn clip_gain_icon(s: &Session, tl: Rect, lane: Rect, clip: &Clip) -> Option<
     (shown && x1 - x0 >= 48.0 && lane.height() >= 30.0).then(|| Rect::from_min_size(pos2(x0 + 4.0, lane.max.y - 16.0), vec2(9.0, 13.0)))
 }
 
+/// Draw the read-only clip-gain fader tooltip at `pos`.
 fn clip_gain_popup(ctx: &egui::Context, fader_bottom: Pos2, pos: f32) {
     let t = Tokens::current();
     let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("clip_gain_fader")));
@@ -2118,6 +2125,8 @@ fn clip_gain_popup(ctx: &egui::Context, fader_bottom: Pos2, pos: f32) {
     p.text(pos2(panel.center().x, panel.min.y + 12.0), Align2::CENTER_CENTER, format!("{db:+.1}"), regular(10.5), t.counter_text);
 }
 
+/// Handle one track lane: clip context menus, drag-and-drop sources, sampler drops, and the active tool's selection,
+/// trim, fade, automation and clip editing.
 fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rect, tl: Rect) {
     let id = ui.scope_id().with(("lane", track.id.0));
     let resp = ui.interact(lane, id, Sense::click_and_drag());
@@ -4238,6 +4247,8 @@ mod tests {
         assert!(s.edit.selection.end > pointed, "the selection did not follow the scroll");
     }
 
+    /// A pass redrawn by egui must still contribute one frame-time sample, measured from the host clock rather than
+    /// UI input time.
     #[test]
     fn a_redrawn_frame_counts_once_in_the_frame_time() {
         let mut h = harness(4);

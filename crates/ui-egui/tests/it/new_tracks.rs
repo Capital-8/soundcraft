@@ -55,6 +55,7 @@ fn double_click_below_the_last_track_opens_new_tracks() {
     }
 }
 
+/// Double-clicking to the right of the last Mix strip opens the New Tracks dialog.
 #[test]
 fn double_click_right_of_the_last_strip_opens_new_tracks() {
     let mut h = harness(1);

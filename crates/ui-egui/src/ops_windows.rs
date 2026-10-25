@@ -88,6 +88,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     rtp(app, ctx);
 }
 
+/// Beat Detective window: sensitivity, separate and set-tempo options, Analyze and Apply results, and Identify Beat.
 fn beat_detective(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_beat_detective;
     if !open {
@@ -144,6 +145,8 @@ pub(crate) fn tempo_ops_apply(curve: &str, start_bpm: f64, end_bpm: f64) -> (&'s
     }
 }
 
+/// Tempo Operations window: choose a curve and start/end tempo, then dispatch its command using the edit selection.
+/// Constant sends only the start BPM; without a nonempty range, its command defaults to sample zero.
 fn tempo_ops(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_tempo_ops;
     if !open {
@@ -172,6 +175,8 @@ fn tempo_ops(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_tempo_ops = open;
 }
 
+/// Time Operations window: insert a duration in seconds at the selection start, cut the edit selection, change the
+/// meter, or move the song start to the selection start.
 fn time_ops(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_time_ops;
     if !open {
