@@ -314,8 +314,14 @@ pub struct SoundApp {
     /// the next tick, so that copy is removed before the batch is appended again: one pending batch
     /// must never grow into two copies per hidden tick.
     injected_events: Vec<egui::Event>,
-    /// Where [`Self::injected_events`] starts in that retained input, when that is known.
+    /// Where [`Self::injected_events`] starts in that retained input, when that is known. Shortcut
+    /// handling and batch acknowledgement use this position to identify the injected events by
+    /// provenance instead of by their (host-collidable) key values.
     injected_at: usize,
+    /// The host's physical `keys_down` after the key events in this frame's raw input, before the
+    /// synthetic batch was appended. `ui` restores this after egui processed the scripted release,
+    /// so a scripted press while the user holds the same key does not report the key as up.
+    host_keys_down: Option<std::collections::HashSet<egui::Key>>,
     /// The pointer/keyboard state of the last known UI phase. A hidden logic-only tick must not act
     /// on the previous pass's stale input.
     pointer_down: bool,
@@ -489,6 +495,7 @@ impl SoundApp {
             cancel_synthetic_pointer: false,
             injected_events: Vec::new(),
             injected_at: 0,
+            host_keys_down: None,
             pointer_down: false,
             wants_keyboard: false,
             sample_drop_targets: Vec::new(),
@@ -1475,6 +1482,7 @@ impl SoundApp {
         // copy appended last time before appending the still-pending batch again: otherwise a
         // single queued key press would arrive once per hidden tick and run N times on restore.
         self.remove_injected(raw);
+        self.host_keys_down = None;
         if std::mem::take(&mut self.cancel_synthetic_pointer) {
             // Do this before egui begins its next input/interaction pass. stop_dragging marks a
             // drag_stopped in the current snapshot; the next pass replaces it without a release.
@@ -1512,6 +1520,15 @@ impl SoundApp {
             self.synthetic_batch = Some(self.synthetic.drain(..n).collect());
         }
         let Some(batch) = self.synthetic_batch.clone() else { return };
+        if batch.iter().any(|e| matches!(e, egui::Event::Key { .. })) {
+            // egui derives a press's `repeat` flag and the final `keys_down` from every event in the
+            // batch. A scripted press+release while the host physically holds the same key would
+            // therefore be marked as a repeat and would leave `keys_down` reporting the key as up.
+            // Remember the host-only state; `ui` puts it back after egui processed the batch. The
+            // hook itself never mutates egui's input, so a hidden logic-only tick cannot corrupt it.
+            let previous = ctx.input(|i| i.keys_down.clone());
+            self.host_keys_down = Some(Self::host_keys_after(previous, &raw.events));
+        }
         let mut injected = Vec::with_capacity(batch.len() * 2);
         for e in &batch {
             if matches!(e, egui::Event::PointerButton { pressed: true, .. }) {
@@ -1526,6 +1543,25 @@ impl SoundApp {
         self.injected_at = raw.events.len();
         raw.events.extend(injected.iter().cloned());
         self.injected_events = injected;
+    }
+
+    /// The physical key state after the host's own events, ignoring any synthetic batch appended
+    /// later. egui starts from the previous pass's `keys_down`, then applies key events in order.
+    fn host_keys_after(mut down: std::collections::HashSet<egui::Key>, events: &[egui::Event]) -> std::collections::HashSet<egui::Key> {
+        for event in events {
+            match event {
+                egui::Event::Key { key, pressed: true, .. } => {
+                    down.insert(*key);
+                }
+                egui::Event::Key { key, pressed: false, .. } => {
+                    down.remove(key);
+                }
+                // egui clears all held keys when the window loses focus.
+                egui::Event::WindowFocused(false) => down.clear(),
+                _ => {}
+            }
+        }
+        down
     }
 
     /// Remove the events [`Self::raw_input_hook`] appended to an input the host retained, so the
@@ -1552,6 +1588,12 @@ impl SoundApp {
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // egui just processed the scripted key events. A scripted release while the host still
+        // physically holds the key would report it up; put the host-only state back before any
+        // shortcut or widget reads it.
+        if let Some(host_down) = self.host_keys_down.take() {
+            ctx.input_mut(|i| i.keys_down = host_down);
+        }
         // Dropped files arrive in a real UI pass. Capture and clear them before the font gate, so a
         // first frame that returns before layout keeps them in a one-shot queue for the next
         // laid-out pass, and a forced hidden paint handles them like any other.
@@ -1654,10 +1696,48 @@ impl SoundApp {
         }
     }
 
+    /// Whether `received` is the event `wanted` after egui's input pass. egui rewrites the `repeat`
+    /// flag of `egui::Event::Key` from the keys held in the previous pass, so a scripted press can
+    /// arrive marked as a repeat; the other fields still identify the event. All other events must
+    /// match exactly.
+    pub(crate) fn synthetic_event_received(wanted: &egui::Event, received: &egui::Event) -> bool {
+        match (wanted, received) {
+            (
+                egui::Event::Key { key, physical_key, pressed, modifiers, .. },
+                egui::Event::Key { key: got_key, physical_key: got_physical, pressed: got_pressed, modifiers: got_modifiers, .. },
+            ) => key == got_key && physical_key == got_physical && pressed == got_pressed && modifiers == got_modifiers,
+            _ => wanted == received,
+        }
+    }
+
+    /// The exact positions in this pass's events of the pending batch's key presses. Shortcut
+    /// handling uses provenance rather than matching key/modifier values: a fresh host press with
+    /// the same chord is a separate action, and egui's rewritten `repeat` flag only describes the
+    /// physical key state, not which event was injected.
+    pub(crate) fn scripted_key_press_indices(&self) -> Vec<usize> {
+        if self.synthetic_batch.is_none() {
+            return Vec::new();
+        }
+        self.injected_events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, egui::Event::Key { pressed: true, .. }))
+            .map(|(offset, _)| self.injected_at.saturating_add(offset))
+            .collect()
+    }
+
     /// Whether this UI pass actually received the pending synthetic batch's events.
     fn pass_received_synthetic(&self, ctx: &egui::Context) -> bool {
-        let Some(batch) = &self.synthetic_batch else { return false };
-        ctx.input(|i| batch.iter().all(|e| i.events.contains(e)))
+        if self.synthetic_batch.is_none() || self.injected_events.is_empty() {
+            return false;
+        }
+        let Some(end) = self.injected_at.checked_add(self.injected_events.len()) else { return false };
+        ctx.input(|i| {
+            i.events.len() >= end
+                && self.injected_events.iter().enumerate().all(|(offset, sent)| {
+                    i.events.get(self.injected_at + offset).is_some_and(|received| Self::synthetic_event_received(sent, received))
+                })
+        })
     }
 
     /// Load dropped audio into the sampler track under the drop point; leave everything else for
@@ -2418,6 +2498,375 @@ mod tests {
             "scripted input must not publish clipboard or PRIMARY commands: {:?}",
             out.platform_output.commands
         );
+    }
+
+    /// egui rewrites a key press's `repeat` flag from the keys held in the previous pass. A scripted
+    /// press must still run its shortcut even while the same physical key is held, a same-frame host
+    /// auto-repeat with the same chord must not make it run twice, and the host's held state must
+    /// survive the scripted press and release.
+    #[test]
+    fn a_held_key_does_not_turn_a_scripted_press_into_a_repeat() {
+        let ctx = egui::Context::default();
+        let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
+        for _ in 0..4 {
+            let mut out = ctx.run_ui(raw(), |ui| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        }
+        for _ in 0..2 {
+            app.run("track.new", json!({"count": 1, "format": "stereo"})).unwrap();
+        }
+        let depth = app.engine.undo_history().len();
+        assert!(depth >= 2, "the test needs two undoable edits");
+        let modifiers = egui::Modifiers { command: true, ..egui::Modifiers::NONE };
+        // The user presses and holds Cmd+Z. That real press is one undo and leaves Z physically
+        // down; a later same-chord press is rewritten to a repeat.
+        let mut held = raw();
+        held.events.push(egui::Event::Key { key: egui::Key::Z, physical_key: Some(egui::Key::Z), pressed: true, repeat: false, modifiers });
+        let mut out = ctx.run_ui(held, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(ctx.input(|i| i.keys_down.contains(&egui::Key::Z)), "the host is still holding Z");
+        assert_eq!(app.engine.undo_history().len(), depth - 1, "the real host press ran one undo");
+        let held_depth = app.engine.undo_history().len();
+        // Cmd+Z from the control channel while that chord is held, with the host's same-frame
+        // auto-repeat already in the raw input ahead of the appended synthetic batch. Both events
+        // have the same key, physical key and modifiers; only the host one is a repeat.
+        for pressed in [true, false] {
+            app.synthetic.push(egui::Event::Key { key: egui::Key::Z, physical_key: Some(egui::Key::Z), pressed, repeat: false, modifiers });
+        }
+        let mut input = raw();
+        input.events.push(egui::Event::Key { key: egui::Key::Z, physical_key: Some(egui::Key::Z), pressed: true, repeat: true, modifiers });
+        app.raw_input_hook(&ctx, &mut input);
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(app.synthetic_batch.is_none(), "the pass that received the rewritten press acknowledged it");
+        assert!(ctx.input(|i| i.key_down(egui::Key::Z)), "the scripted release did not report the physically held key as up");
+        assert_eq!(app.engine.undo_history().len(), held_depth - 1, "the scripted Cmd+Z ran exactly once despite the identical host repeat");
+        // The following host frame must not replay the same key.
+        let mut input = raw();
+        input.events.push(egui::Event::Key { key: egui::Key::Z, physical_key: Some(egui::Key::Z), pressed: true, repeat: true, modifiers });
+        app.raw_input_hook(&ctx, &mut input);
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert_eq!(app.engine.undo_history().len(), held_depth - 1, "a later host auto-repeat must not undo a second time");
+        assert!(ctx.input(|i| i.key_down(egui::Key::Z)), "the host still holds Z after the repeat");
+    }
+
+    /// A fresh physical Cmd+Z and an identical scripted Cmd+Z in one frame are distinct actions.
+    /// Matching them by value would swallow the scripted press; provenance keeps both.
+    #[test]
+    fn a_fresh_host_press_and_a_scripted_press_both_run() {
+        let ctx = egui::Context::default();
+        let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
+        for _ in 0..4 {
+            let mut out = ctx.run_ui(raw(), |ui| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        }
+        for _ in 0..2 {
+            app.run("track.new", json!({"count": 1, "format": "stereo"})).unwrap();
+        }
+        let depth = app.engine.undo_history().len();
+        assert!(depth >= 2, "the test needs two undoable edits");
+        let modifiers = egui::Modifiers { command: true, ..egui::Modifiers::NONE };
+        for pressed in [true, false] {
+            app.synthetic.push(egui::Event::Key { key: egui::Key::Z, physical_key: Some(egui::Key::Z), pressed, repeat: false, modifiers });
+        }
+        let mut input = raw();
+        input.events.push(egui::Event::Key { key: egui::Key::Z, physical_key: Some(egui::Key::Z), pressed: true, repeat: false, modifiers });
+        app.raw_input_hook(&ctx, &mut input);
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(app.synthetic_batch.is_none(), "the pass acknowledged the injected batch");
+        assert_eq!(app.engine.undo_history().len(), depth - 2, "the physical press and the injected press are separate actions");
+        assert!(ctx.input(|i| i.key_down(egui::Key::Z)), "the physical press still holds Z after the injected release");
+    }
+
+    /// A hidden logic-only tick after the hook runs no egui input pass. Repeated hidden ticks that
+    /// re-hook the retained host input must leave the physical key state and one pending batch
+    /// untouched.
+    #[test]
+    fn a_hidden_logic_tick_after_the_hook_keeps_the_held_key_and_pending_batch() {
+        let ctx = egui::Context::default();
+        let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let visible = egui::ViewportInfo { inner_rect: Some(rect), ..Default::default() };
+        let hidden = egui::ViewportInfo { minimized: Some(true), ..Default::default() };
+        let raw = |viewport: egui::ViewportInfo| egui::RawInput {
+            screen_rect: Some(rect),
+            viewports: [(egui::ViewportId::ROOT, viewport)].into_iter().collect(),
+            ..Default::default()
+        };
+        for _ in 0..4 {
+            let mut out = ctx.run_ui(raw(visible.clone()), |ui| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        }
+        app.run("track.new", json!({"count": 1, "format": "stereo"})).unwrap();
+        let depth = app.engine.undo_history().len();
+        assert!(depth > 0, "the test needs an undoable edit");
+        // Alt+Z keeps Z physically down without firing the plain-Z Commands Focus undo.
+        let mut held = raw(visible.clone());
+        held.events.push(egui::Event::Key {
+            key: egui::Key::Z,
+            physical_key: Some(egui::Key::Z),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers { alt: true, ..egui::Modifiers::NONE },
+        });
+        let mut out = ctx.run_ui(held, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(ctx.input(|i| i.key_down(egui::Key::Z)));
+        assert_eq!(app.engine.undo_history().len(), depth, "holding Alt+Z is not a command");
+        let modifiers = egui::Modifiers { command: true, ..egui::Modifiers::NONE };
+        for pressed in [true, false] {
+            app.synthetic.push(egui::Event::Key { key: egui::Key::Z, physical_key: Some(egui::Key::Z), pressed, repeat: false, modifiers });
+        }
+        // eframe retains a hook-mutated input across hidden ticks and hands it back to the hook.
+        let mut retained = raw(hidden);
+        for tick in 0..3 {
+            app.raw_input_hook(&ctx, &mut retained);
+            assert!(ctx.input(|i| i.key_down(egui::Key::Z)), "hook tick {tick} mutated the held state");
+            assert!(app.synthetic_batch.is_some(), "hook tick {tick} dropped the batch");
+            assert_eq!(app.engine.undo_history().len(), depth, "hook tick {tick} ran a shortcut");
+            let _ = ctx.run_logic(&retained, |ctx| app.logic(ctx));
+            assert!(ctx.input(|i| i.key_down(egui::Key::Z)), "hidden tick {tick} erased the physically held key");
+            assert!(app.synthetic_batch.is_some(), "hidden tick {tick} applied or dropped the batch");
+            assert_eq!(app.engine.undo_history().len(), depth, "hidden tick {tick} ran a shortcut");
+        }
+        // The deferred batch still reaches the next UI pass exactly once.
+        let mut out = ctx.run_ui(retained, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(app.synthetic_batch.is_none());
+        assert_eq!(app.engine.undo_history().len(), depth - 1, "the deferred scripted Cmd+Z ran exactly once");
+        assert!(ctx.input(|i| i.key_down(egui::Key::Z)), "the held key survives the deferred pass too");
+    }
+
+    /// A frame that asks for a second layout pass receives the injected key and dispatches it in
+    /// the first pass. The batch must be acknowledged once, and the physically held key must still
+    /// be down in the settled pass rather than being cleared by the scripted release.
+    #[test]
+    fn a_multi_pass_frame_keeps_the_held_key_and_applies_the_scripted_press_once() {
+        let ctx = egui::Context::default();
+        let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
+        for _ in 0..4 {
+            let mut out = ctx.run_ui(raw(), |ui| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        }
+        app.run("track.new", json!({"count": 1, "format": "stereo"})).unwrap();
+        let depth = app.engine.undo_history().len();
+        assert!(depth > 0, "the test needs an undoable edit");
+        let mut held = raw();
+        held.events.push(egui::Event::Key {
+            key: egui::Key::Z,
+            physical_key: Some(egui::Key::Z),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers { alt: true, ..egui::Modifiers::NONE },
+        });
+        let mut out = ctx.run_ui(held, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(ctx.input(|i| i.key_down(egui::Key::Z)));
+        let modifiers = egui::Modifiers { command: true, ..egui::Modifiers::NONE };
+        for pressed in [true, false] {
+            app.synthetic.push(egui::Event::Key { key: egui::Key::Z, physical_key: Some(egui::Key::Z), pressed, repeat: false, modifiers });
+        }
+        let mut input = raw();
+        app.raw_input_hook(&ctx, &mut input);
+        let mut first_pass = true;
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(ui.ctx());
+            if first_pass {
+                first_pass = false;
+                // A measurement or grid asks for another layout pass after the widgets ran.
+                ui.ctx().request_discard("discard the pass that received the synthetic key");
+            }
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(out.platform_output.num_completed_passes >= 2, "the frame really ran more than one pass");
+        assert!(app.synthetic_batch.is_none(), "the pass that received the batch consumed it");
+        assert_eq!(app.engine.undo_history().len(), depth - 1, "one scripted Cmd+Z undid exactly one edit");
+        assert_eq!(app.synthetic_applied_batches, 1);
+        assert!(ctx.input(|i| i.key_down(egui::Key::Z)), "the held key survives the settled multi-pass frame");
+    }
+
+    /// Losing focus clears the physical key state even when a scripted key batch is in flight. The
+    /// injected press still runs once, and restoring the host-only state must not bring the stale
+    /// held key back.
+    #[test]
+    fn a_focus_loss_clears_a_held_key_with_a_pending_scripted_press() {
+        let ctx = egui::Context::default();
+        let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
+        for _ in 0..4 {
+            let mut out = ctx.run_ui(raw(), |ui| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        }
+        app.run("track.new", json!({"count": 1, "format": "stereo"})).unwrap();
+        let depth = app.engine.undo_history().len();
+        assert!(depth > 0, "the test needs an undoable edit");
+        let mut held = raw();
+        held.events.push(egui::Event::Key {
+            key: egui::Key::Z,
+            physical_key: Some(egui::Key::Z),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers { alt: true, ..egui::Modifiers::NONE },
+        });
+        let mut out = ctx.run_ui(held, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(ctx.input(|i| i.key_down(egui::Key::Z)));
+        let modifiers = egui::Modifiers { command: true, ..egui::Modifiers::NONE };
+        for pressed in [true, false] {
+            app.synthetic.push(egui::Event::Key { key: egui::Key::Z, physical_key: Some(egui::Key::Z), pressed, repeat: false, modifiers });
+        }
+        let mut input = raw();
+        input.events.push(egui::Event::WindowFocused(false));
+        app.raw_input_hook(&ctx, &mut input);
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(app.synthetic_batch.is_none(), "the injected batch still ran once after focus loss");
+        assert_eq!(app.engine.undo_history().len(), depth - 1);
+        assert!(!ctx.input(|i| i.key_down(egui::Key::Z)), "focus loss cleared the held key and the injected release did not resurrect it");
+        // The next host frame must not bring the stale key back either.
+        let mut out = ctx.run_ui(raw(), |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(!ctx.input(|i| i.key_down(egui::Key::Z)));
+        assert_eq!(app.engine.undo_history().len(), depth - 1);
+    }
+
+    /// A host key with the same signature as the pending injection does not acknowledge a batch
+    /// that was never actually appended. Otherwise a lookalike event could hide a lost scripted
+    /// action.
+    #[test]
+    fn a_host_key_with_the_same_signature_does_not_acknowledge_the_batch() {
+        let ctx = egui::Context::default();
+        let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
+        for _ in 0..4 {
+            let mut out = ctx.run_ui(raw(), |ui| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        }
+        for _ in 0..2 {
+            app.run("track.new", json!({"count": 1, "format": "stereo"})).unwrap();
+        }
+        let depth = app.engine.undo_history().len();
+        assert!(depth >= 2, "the test needs two undoable edits");
+        let modifiers = egui::Modifiers { command: true, ..egui::Modifiers::NONE };
+        // The batch is pending but this pass was not prepared by the hook, so it carries no injected
+        // copy. The identical host press is a real action, not the injected one.
+        app.synthetic_batch =
+            Some(vec![egui::Event::Key { key: egui::Key::Z, physical_key: Some(egui::Key::Z), pressed: true, repeat: false, modifiers }]);
+        let mut input = raw();
+        input.events.push(egui::Event::Key { key: egui::Key::Z, physical_key: Some(egui::Key::Z), pressed: true, repeat: false, modifiers });
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(app.synthetic_batch.is_some(), "a lookalike host event must not acknowledge the batch");
+        assert_eq!(app.synthetic_applied_batches, 0);
+        assert_eq!(app.engine.undo_history().len(), depth - 1, "only the real host press ran");
+        // The hook then appends the actual injection; that pass acknowledges and runs it once.
+        let mut input = raw();
+        app.raw_input_hook(&ctx, &mut input);
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert!(app.synthetic_batch.is_none());
+        assert_eq!(app.synthetic_applied_batches, 1);
+        assert_eq!(app.engine.undo_history().len(), depth - 2, "the actual injected press ran in addition to the host press");
+    }
+
+    /// The acknowledgement compares key events without egui's rewritten `repeat` flag. Every other
+    /// identifying field — the logical key, physical key, press/release state and modifiers — still
+    /// has to match.
+    #[test]
+    fn synthetic_key_acknowledgement_ignores_only_the_rewritten_repeat_flag() {
+        let modifiers = egui::Modifiers { command: true, ..egui::Modifiers::NONE };
+        let sent = egui::Event::Key { key: egui::Key::Z, physical_key: Some(egui::Key::Z), pressed: true, repeat: false, modifiers };
+        let mut received = sent.clone();
+        if let egui::Event::Key { repeat, .. } = &mut received {
+            *repeat = true;
+        }
+        assert!(super::SoundApp::synthetic_event_received(&sent, &received), "egui's repeat rewrite does not hide the press");
+        let mut wrong = received.clone();
+        if let egui::Event::Key { key, .. } = &mut wrong {
+            *key = egui::Key::X;
+        }
+        assert!(!super::SoundApp::synthetic_event_received(&sent, &wrong), "a different logical key is not the scripted press");
+        let mut wrong = received.clone();
+        if let egui::Event::Key { physical_key, .. } = &mut wrong {
+            *physical_key = None;
+        }
+        assert!(!super::SoundApp::synthetic_event_received(&sent, &wrong), "a different physical key is not the scripted press");
+        let mut wrong = received.clone();
+        if let egui::Event::Key { pressed, .. } = &mut wrong {
+            *pressed = false;
+        }
+        assert!(!super::SoundApp::synthetic_event_received(&sent, &wrong), "a release is not the scripted press");
+        let mut wrong = received;
+        if let egui::Event::Key { modifiers: got, .. } = &mut wrong {
+            *got = egui::Modifiers::NONE;
+        }
+        assert!(!super::SoundApp::synthetic_event_received(&sent, &wrong), "different modifiers are not the scripted press");
+        assert!(!super::SoundApp::synthetic_event_received(&sent, &egui::Event::Text("z".into())), "other variants match exactly");
     }
 
     /// A pass that receives the synthetic events and then asks for another layout pass has already

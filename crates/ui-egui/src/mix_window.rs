@@ -557,7 +557,7 @@ pub(crate) fn instrument_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, r:
     let ins = track.instrument.as_ref();
     let info = ins.and_then(|i| plugin_info(&i.plugin));
     let resp = ui.interact(r, ui.scope_id().with(("instrument", id.0)), Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Instrument"));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Instrument for {}", track.name)));
     match info {
         Some(info) => used_slot(ui.painter(), r, t.slot_face, Mark::Dot, info.short_name, t.text, None),
         None => empty_slot(ui.painter(), r, resp.hovered(), Mark::Dot),
@@ -648,7 +648,7 @@ pub(crate) fn insert_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: 
     let id = track.id;
     let ins = track.mixer.inserts.get(slot).cloned().flatten();
     let resp = ui.interact(r, ui.scope_id().with(("ins", id.0, slot)), Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Insert {}", (b'A' + slot as u8) as char)));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Insert {} for {}", (b'A' + slot as u8) as char, track.name)));
     let info = ins.as_ref().and_then(|i| plugin_info(&i.plugin));
     let name = ins.as_ref().map(|i| info.map_or(i.plugin.as_str(), |p| p.short_name)).unwrap_or_default();
     match &ins {
@@ -986,7 +986,8 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
     let level_r = if compact { r } else { level_icon(r).expand2(vec2(3.0, 0.0)).with_min_y(r.min.y).with_max_y(r.max.y) };
     let route_r = Rect::from_min_max(r.min, pos2((level_r.min.x - 1.0).max(r.min.x), r.max.y));
     let route_resp = ui.interact(if snd.is_some() { route_r } else { r }, ui.scope_id().with(("snd-route", id.0, slot)), Sense::click());
-    route_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Send {}", (b'A' + slot as u8) as char)));
+    route_resp
+        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Send {} for {}", (b'A' + slot as u8) as char, track.name)));
     let mark = if compact { Mark::Arrow } else { Mark::Letter((b'a' + slot as u8) as char) };
     match &snd {
         Some(s) => {
@@ -997,7 +998,7 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
             let which = (b'A' + slot as u8) as char;
             let shown = app.ui.send_window == Some((id, slot));
             let level_resp = ui.interact(level_r, ui.scope_id().with(("send-value", id.0, slot)), Sense::click_and_drag());
-            level_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Send {which} level")));
+            level_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Send {which} level for {}", track.name)));
             if shown {
                 ui.painter().rect_stroke(level_r.shrink(0.5), 1.0, Stroke::new(1.5, t.accent), StrokeKind::Inside);
             }
@@ -1105,7 +1106,7 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                 ui.label(egui::RichText::new(pan_text(send.pan)).color(t.counter_text).small());
                 let (fr, fresp) = ui.allocate_exact_size(vec2(56.0, 220.0), Sense::hover());
                 fresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, "Send level"));
-                // Distinct from the strip's "Send A level" icon and from the slot "Send level", so a
+                // Distinct from the strip's "Send A level for <track>" icon and from the slot's "Send level", so a
                 // label query while the window is open still picks one node.
                 if let Some(db) = fader(ui, fr, send.level_db, ui.scope_id().with("send_fader"), "Send level fader") {
                     let _ = app.engine.execute_merged(

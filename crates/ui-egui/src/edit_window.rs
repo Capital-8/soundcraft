@@ -3041,10 +3041,12 @@ mod tests {
             let mode_label = format!("Automation mode for {name}");
             let mode = h.query_by_role_and_label(Role::ComboBox, &mode_label).unwrap_or_else(|| panic!("missing mix automation mode for {name}"));
             assert_eq!(mode.value().as_deref(), Some("auto read"), "mix automation value for {name}");
-            for label in ["Input", "Output", "Group", "Record enable", "Input monitoring", "Solo", "Mute"] {
+            for label in ["Input", "Output", "Group", "Record enable", "Input monitoring", "Solo", "Mute", "Insert A", "Send A"] {
                 assert!(h.query_by_label(&format!("{label} for {name}")).is_some(), "missing mix {label} for {name}");
             }
         }
+        // A used send's level is another per-track control; it must name its track too.
+        assert!(h.query_by_label("Send A level for Snare").is_some(), "missing mix send A level for Snare");
     }
 
     /// Every track's comments editor carries its own name, so label queries and screen readers can

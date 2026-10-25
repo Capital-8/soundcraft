@@ -41,7 +41,7 @@ fn press(h: &mut Harness<SoundApp>, at: Pos2, pressed: bool, modifiers: Modifier
 #[test]
 fn a_sends_level_opens_its_send_window() {
     let (mut h, vox) = harness();
-    h.get_by_label("Send A level").click();
+    h.get_by_label("Send A level for Vox").click();
     h.run_steps(3);
     assert_eq!(h.state().ui.send_window, Some((vox, 0)));
     assert!(h.query_by_label_contains("Vox · Send A").is_some());
@@ -63,11 +63,11 @@ fn a_sends_level_opens_its_send_window() {
     assert_eq!(level(&h, 0), -144.0, "the fader goes down to −∞");
     assert_eq!(level(&h, 1), -10.0);
 
-    h.get_by_label("Send B level").click();
+    h.get_by_label("Send B level for Vox").click();
     h.run_steps(3);
     assert_eq!(h.state().ui.send_window, Some((vox, 1)), "another send's level moves the window there");
     assert!(h.query_by_label_contains("Vox · Send B").is_some());
-    h.get_by_label("Send B level").click();
+    h.get_by_label("Send B level for Vox").click();
     h.run_steps(3);
     assert_eq!(h.state().ui.send_window, None, "clicking the same send again closes it");
     assert!(h.query_by_label_contains("Vox · Send").is_none());
@@ -76,11 +76,11 @@ fn a_sends_level_opens_its_send_window() {
 #[test]
 fn escape_closes_the_send_window_after_menus_and_typing() {
     let (mut h, vox) = harness();
-    h.get_by_label("Send A level").click();
+    h.get_by_label("Send A level for Vox").click();
     h.run_steps(3);
 
     // A right-click menu on top takes the first Escape.
-    let at = h.get_by_label("Send A level").rect().center();
+    let at = h.get_by_label("Send A level for Vox").rect().center();
     h.hover_at(at);
     for pressed in [true, false] {
         h.event(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });

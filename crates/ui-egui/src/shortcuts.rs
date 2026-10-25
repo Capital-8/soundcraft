@@ -60,11 +60,24 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() {
         return;
     }
+    // A scripted press is identified by its exact position in this pass's events, not by matching
+    // key/modifier values. A fresh host press with the same chord must still run its own action in
+    // addition to the scripted one, while a host auto-repeat stays ignored: egui rewrites an
+    // event's `repeat` flag from the physical key state, which says nothing about whether that
+    // particular event was injected. Every non-scripted repeat is ignored as before.
+    let scripted = app.scripted_key_press_indices();
     let events: Vec<(Key, Modifiers)> = ctx.input(|i| {
         i.events
             .iter()
-            .filter_map(|e| match e {
-                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => Some((*key, *modifiers)),
+            .enumerate()
+            .filter_map(|(index, e)| match e {
+                egui::Event::Key { key, pressed: true, repeat, modifiers, .. } => {
+                    if scripted.contains(&index) {
+                        Some((*key, *modifiers))
+                    } else {
+                        (!*repeat).then_some((*key, *modifiers))
+                    }
+                }
                 _ => None,
             })
             .collect()

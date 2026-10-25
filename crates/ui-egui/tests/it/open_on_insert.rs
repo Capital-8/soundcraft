@@ -65,7 +65,7 @@ fn inserted(h: &Harness<SoundApp>) -> Option<String> {
 fn picking_a_plugin_for_an_empty_insert_opens_it() {
     let (category, plugin, _) = two_effects();
     let mut h = harness(vox(), MainWindow::Mix);
-    pick(&mut h, "Insert A", false, &category, plugin.name);
+    pick(&mut h, "Insert A for Vox", false, &category, plugin.name);
     assert_eq!(inserted(&h).as_deref(), Some(plugin.id));
     let id = vox_id(&h);
     assert_eq!(h.state().ui.plugin_windows, vec![(id, 0)], "the new insert's window opened");
@@ -74,7 +74,7 @@ fn picking_a_plugin_for_an_empty_insert_opens_it() {
 #[test]
 fn picking_from_the_search_opens_it_too() {
     let mut h = harness(vox(), MainWindow::Mix);
-    h.get_by_label("Insert A").click();
+    h.get_by_label("Insert A for Vox").click();
     h.run_steps(3);
     h.event(egui::Event::Text("reverb".into()));
     h.run_steps(2);
@@ -93,7 +93,7 @@ fn replacing_a_filled_insert_opens_the_new_plugin() {
     engine.execute("mix.insert", &json!({"track": track.0, "slot": 0, "plugin": first.id})).unwrap();
     let mut h = harness(engine, MainWindow::Mix);
     assert!(h.state().ui.plugin_windows.is_empty(), "nothing opens before a pick");
-    pick(&mut h, "Insert A", true, &category, second.name);
+    pick(&mut h, "Insert A for Vox", true, &category, second.name);
     assert_eq!(inserted(&h).as_deref(), Some(second.id));
     assert_eq!(h.state().ui.plugin_windows, vec![(track, 0)]);
 }
@@ -102,7 +102,7 @@ fn replacing_a_filled_insert_opens_the_new_plugin() {
 fn the_edit_windows_inserts_column_opens_it_too() {
     let (category, plugin, _) = two_effects();
     let mut h = harness(vox(), MainWindow::Edit);
-    pick(&mut h, "Insert A", false, &category, plugin.name);
+    pick(&mut h, "Insert A for Vox", false, &category, plugin.name);
     assert_eq!(inserted(&h).as_deref(), Some(plugin.id));
     let id = vox_id(&h);
     assert_eq!(h.state().ui.plugin_windows, vec![(id, 0)]);

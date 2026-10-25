@@ -387,6 +387,23 @@ fn mods(p: &Value) -> egui::Modifiers {
     }
 }
 
+fn command_list(app: &mut SoundApp, p: &Value) -> Value {
+    let mut list = match app.engine.execute("engine.commands", p) {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+    // Same predicate as the engine's `engine.commands`: id or label substring, ASCII case-insensitive.
+    let filter = p.get("filter").and_then(Value::as_str).map(str::to_ascii_lowercase);
+    let matches =
+        |id: &str, label: &str| filter.as_deref().is_none_or(|f| id.to_ascii_lowercase().contains(f) || label.to_ascii_lowercase().contains(f));
+    if let Some(arr) = list.as_array_mut() {
+        for (id, label, path, sc) in crate::menus::UI_COMMANDS.iter().filter(|c| matches(c.0, c.1)) {
+            arr.push(json!({"id": id, "label": label, "menu": path, "shortcut": sc, "enabled": true, "params": "{}"}));
+        }
+    }
+    ok(list)
+}
+
 fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Option<Value> {
     let p = &req.params;
     let f = |k: &str| p.get(k).and_then(Value::as_f64).unwrap_or(0.0) as f32;
@@ -401,23 +418,7 @@ fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Opti
                 Err(e) => err(e),
             }
         }
-        "engine.commands" => {
-            let mut list = match app.engine.execute("engine.commands", p) {
-                Ok(v) => v,
-                Err(e) => return Some(err(e)),
-            };
-            // Same predicate as the engine's `engine.commands`: id or label substring, ASCII case-insensitive.
-            let filter = p.get("filter").and_then(Value::as_str).map(str::to_ascii_lowercase);
-            let matches = |id: &str, label: &str| {
-                filter.as_deref().is_none_or(|f| id.to_ascii_lowercase().contains(f) || label.to_ascii_lowercase().contains(f))
-            };
-            if let Some(arr) = list.as_array_mut() {
-                for (id, label, path, sc) in crate::menus::UI_COMMANDS.iter().filter(|c| matches(c.0, c.1)) {
-                    arr.push(json!({"id": id, "label": label, "menu": path, "shortcut": sc, "enabled": true, "params": "{}"}));
-                }
-            }
-            ok(list)
-        }
+        "engine.commands" => command_list(app, p),
         "engine.parity" => ok(crate::menus::parity()),
         "session.inspect" | "document.inspect" => {
             ok(soundcraft_engine::inspect::session(&app.engine, p.get("detail").and_then(Value::as_str) == Some("full")))
