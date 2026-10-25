@@ -34,7 +34,7 @@ fn right_click_on_a_track_name_opens_the_track_menu() {
     h.state_mut().ui.window = MainWindow::Mix;
     h.run_steps(4);
     assert!(h.query_by_label("Make Inactive").is_none());
-    let strip = h.get_by_label("Record enable").rect();
+    let strip = h.get_by_label_contains("Record enable").rect();
     right_click(&mut h, pos2(strip.center().x, 900.0 - 17.0));
     assert!(h.query_by_label("Make Inactive").is_some(), "the Mix strip's name plate");
 }

@@ -13,7 +13,7 @@ fn frame(ctx: &egui::Context, app: &mut SoundApp, events: Vec<Event>) {
 }
 
 fn panel(ctx: &egui::Context) -> Rect {
-    ctx.data(|data| data.get_temp::<Rect>(Id::new("soundcraft-midi-body"))).unwrap()
+    ctx.data(|data| data.get_temp::<Rect>(Id::unique("soundcraft-midi-body"))).unwrap()
 }
 
 fn button(pos: Pos2, pressed: bool) -> Event {

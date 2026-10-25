@@ -87,7 +87,7 @@ struct Shared {
 pub enum OutputTrouble {
     /// A block panicked; the output stays silent.
     Bug,
-    /// The device went away.
+    /// The device went away, or the stream was invalidated and must be rebuilt.
     Gone,
     /// The device stopped asking for audio while playing.
     Stalled,
@@ -98,6 +98,7 @@ pub enum OutputTrouble {
 struct Fault {
     /// A block panicked: output stays silent from then on.
     failed: AtomicBool,
+    /// The device went away or the stream was invalidated: only a reconnect can restore audio.
     gone: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.
     beats: std::sync::atomic::AtomicU64,
@@ -362,8 +363,9 @@ impl AudioState {
             let sample = |c: usize| {
                 let ch = self.pending.get(c);
                 let a = ch.and_then(|v| v.get(i0)).copied().unwrap_or(0.0);
-                let b = ch.and_then(|v| v.get(i0 + 1)).copied().unwrap_or(a);
-                a + (b - a) * fr
+                // `pending` is BLOCK long; only `pending_len` frames are valid. Hold the last one at the edge.
+                let b = if i0 + 1 < self.pending_len { ch.and_then(|v| v.get(i0 + 1)).copied().unwrap_or(a) } else { a };
+                a * (1.0 - fr) + b * fr
             };
             if channels < nch {
                 // Fold surround to stereo first; a mono device averages the two sides.
@@ -381,23 +383,25 @@ impl AudioState {
                 }
                 for (c, o) in frame.iter_mut().enumerate() {
                     *o = match c {
-                        0 if channels == 1 => {
-                            let mono = (0.5 * l + 0.5 * r).clamp(-1.0, 1.0);
-                            if mono.is_finite() { mono } else { 0.0 }
-                        }
-                        0 => l.clamp(-1.0, 1.0),
-                        1 => r.clamp(-1.0, 1.0),
+                        0 if channels == 1 => out_sample(0.5 * l + 0.5 * r),
+                        0 => out_sample(l),
+                        1 => out_sample(r),
                         _ => 0.0,
                     };
                 }
             } else {
                 for (c, o) in frame.iter_mut().enumerate() {
-                    *o = if c < nch.max(1) && sounding { sample(c).clamp(-1.0, 1.0) } else { 0.0 };
+                    *o = if c < nch.max(1) && sounding { out_sample(sample(c)) } else { 0.0 };
                 }
             }
             self.read += step;
         }
     }
+}
+
+/// Clamp to the device range, mapping NaN and infinities to silence.
+fn out_sample(v: f32) -> f32 {
+    if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 }
 }
 
 /// UI-thread bookkeeping of the third-party instances the audio thread holds.
@@ -536,9 +540,9 @@ impl Player {
                         let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
                         let fault = Arc::new(Fault::default());
                         let stream = match format {
-                            cpal::SampleFormat::I32 => build_output::<i32>(&device, config, state, channels, &fault, &shared),
-                            cpal::SampleFormat::I16 => build_output::<i16>(&device, config, state, channels, &fault, &shared),
-                            _ => build_output::<f32>(&device, config, state, channels, &fault, &shared),
+                            cpal::SampleFormat::I32 => build_output::<i32>(&device, *config, state, channels, &fault, &shared),
+                            cpal::SampleFormat::I16 => build_output::<i16>(&device, *config, state, channels, &fault, &shared),
+                            _ => build_output::<f32>(&device, *config, state, channels, &fault, &shared),
                         }?;
                         Ok(Opened { stream, tx, grx, fault })
                     },
@@ -684,6 +688,17 @@ impl Player {
         self.side().capture_states()
     }
 
+    /// The plugins that said their state changed since the last call, so the session can keep
+    /// changes made only in plugin editors.
+    pub fn changed_states(&self) -> Vec<(TrackId, usize)> {
+        self.side().changed_states()
+    }
+
+    /// Reads the state of the plugins in `slots`.
+    pub fn capture_states_of(&self, slots: &[(TrackId, usize)]) -> PluginStates {
+        self.side().capture_states_of(slots)
+    }
+
     /// Per-UI-frame housekeeping: drops retired instances and services plugin editors. Returns
     /// the parameter edits made in open editors since the last call.
     pub fn idle(&self) -> Vec<EditorEdit> {
@@ -812,6 +827,24 @@ impl Side {
         self.states.iter_mut().filter(|(k, _)| !self.refused.contains(*k)).filter_map(|(&(t, slot), r)| Some((t, slot, r.save_state()?))).collect()
     }
 
+    fn changed_states(&mut self) -> Vec<(TrackId, usize)> {
+        self.editors.iter_mut().filter_map(|(k, e)| e.state_changed().then_some(*k)).collect()
+    }
+
+    fn capture_states_of(&mut self, slots: &[(TrackId, usize)]) -> PluginStates {
+        self.states
+            .iter_mut()
+            .filter(|(k, _)| !self.refused.contains(*k) && slots.contains(k))
+            .filter_map(|(&(t, slot), r)| Some((t, slot, r.save_state()?)))
+            .collect()
+    }
+
+    /// A plugin that marks its state changed while it loads or restores it hasn't changed.
+    fn add_editor(&mut self, key: (TrackId, usize), mut e: Box<dyn PluginEditor>) {
+        let _ = e.state_changed();
+        self.editors.insert(key, e);
+    }
+
     fn open_editor(&mut self, key: (TrackId, usize)) -> Result<(), String> {
         let e = self.editors.get_mut(&key).ok_or_else(|| "this plugin has no editor (or it is not loaded)".to_string())?;
         e.open()?;
@@ -848,7 +881,7 @@ impl Side {
             self.shadow.insert(key, (spec.id.clone(), spec.ch, made.is_some()));
             if let Some(soundcraft_mix::NewInstance { mut plugin, refused_state }) = made {
                 if let Some(e) = plugin.editor() {
-                    self.editors.insert(key, e);
+                    self.add_editor(key, e);
                 }
                 if let Some(r) = plugin.state_reader() {
                     self.states.insert(key, r);
@@ -921,7 +954,7 @@ fn first_started<A: std::fmt::Debug, S, E: std::fmt::Display>(
 /// never allocates), converted to the device's sample type.
 fn build_output<T>(
     device: &cpal::Device,
-    config: &cpal::StreamConfig,
+    config: cpal::StreamConfig,
     mut state: AudioState,
     channels: usize,
     fault: &Arc<Fault>,
@@ -936,7 +969,7 @@ where
     let chunk = scratch.len();
     let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
     device.build_output_stream(
-        *config,
+        config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
             mark_audio_thread();
             for out in data.chunks_mut(chunk) {
@@ -951,7 +984,11 @@ where
         // broken): marked, so the logger hands the record off instead of writing it.
         move |e: cpal::Error| {
             mark_audio_thread();
-            if e.kind() == cpal::ErrorKind::DeviceNotAvailable {
+            // cpal 0.18 uses one error type for every operation. A device that went away, or a
+            // stream that must be rebuilt (`StreamInvalidated`), stops playback until the user
+            // reconnects; a rerouted default device (`DeviceChanged`) keeps playing on the new
+            // route, and an xrun is transient, so neither counts as losing the stream.
+            if devices::stream_lost(&e) {
                 gone.gone.store(true, Ordering::Relaxed);
             }
             log::warn!("audio stream error: {e}");
@@ -972,49 +1009,65 @@ fn open_device(want_rate: u32, want_ch: u16, cfg: &AudioConfig) -> Result<(cpal:
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
     let want_ch = want_ch.max(2);
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
-    let mut chosen: Option<(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat)> = None;
-    // Better: a preferred format first, then more channels.
-    let better = |c: &cpal::SupportedStreamConfigRange, x: &(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat)| {
-        let (rc, rx) = (devices::format_rank(c.sample_format()).unwrap_or(usize::MAX), devices::format_rank(x.2).unwrap_or(usize::MAX));
-        rc < rx || (rc == rx && c.channels() > x.0.channels)
-    };
-    if let Ok(configs) = device.supported_output_configs() {
-        let configs: Vec<cpal::SupportedStreamConfigRange> = configs.collect();
-        for rate in rates {
-            for c in &configs {
-                if devices::format_rank(c.sample_format()).is_some()
-                    && c.min_sample_rate() <= rate
-                    && c.max_sample_rate() >= rate
-                    && c.channels() >= 2
-                    && c.channels() <= want_ch
-                    && chosen.as_ref().is_none_or(|x| better(c, x))
-                {
-                    chosen = Some((c.with_sample_rate(rate).config(), *c.buffer_size(), c.sample_format()));
-                }
-            }
-            if chosen.is_some() {
-                break;
-            }
-        }
-    }
-    let (config, format) = match chosen {
+    let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_output_configs().map(|configs| configs.collect()).unwrap_or_default();
+    let (config, format) = match pick_output_config(&configs, &rates, want_ch) {
         Some((mut c, buffers, format)) => {
             c.buffer_size = devices::buffer_size(cfg.buffer_size, &buffers);
             (c, format)
         }
         None => {
             let d = device.default_output_config().map_err(|e| e.to_string())?;
-            if devices::format_rank(d.sample_format()).is_none() {
-                return Err(format!("unsupported device sample format {:?}", d.sample_format()));
-            }
-            let buffers = *d.buffer_size();
             let format = d.sample_format();
-            let mut c = d.config();
-            c.buffer_size = devices::buffer_size(cfg.buffer_size, &buffers);
-            (c, format)
+            // cpal 0.18's default can name a format these callbacks do not decode (I24, F64);
+            // open the same rate and channels in a format they do, rather than lose output.
+            let c = if devices::format_rank(format).is_some() {
+                d
+            } else {
+                // Same rate and channels first; else any usable channel count at the default
+                // rate; else the session rate (the mix resamples and folds channels). A device
+                // whose only decoded format is wider or at another rate would otherwise open no
+                // stream at all.
+                devices::supported_format_config(&configs, d.sample_rate(), d.channels())
+                    .or_else(|| devices::supported_format_config(&configs, want_rate, want_ch))
+                    .ok_or_else(|| format!("unsupported device sample format {format:?}"))?
+            };
+            let mut stream_config = c.config();
+            stream_config.buffer_size = devices::buffer_size(cfg.buffer_size, c.buffer_size());
+            (stream_config, c.sample_format())
         }
     };
     Ok((device, config, format, name))
+}
+
+/// Pick the output configuration for the first requested rate the device offers (the configured
+/// rate first, then the session rate), preferring the best sample format and then the most
+/// channels from stereo up to `want_ch`. `None` when the device offers none of the requested
+/// rates in a usable format; the caller then uses the device's default output configuration,
+/// which the mix resamples to the session rate.
+fn pick_output_config(
+    configs: &[cpal::SupportedStreamConfigRange],
+    rates: &[u32],
+    want_ch: u16,
+) -> Option<(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat)> {
+    for &rate in rates {
+        let mut best: Option<(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat, usize, u16)> = None;
+        for c in configs {
+            let Some(rank) = devices::format_rank(c.sample_format()) else { continue };
+            if !c.contains_rate(rate) || c.channels() < 2 || c.channels() > want_ch {
+                continue;
+            }
+            let Some(config) = c.try_with_sample_rate(rate) else { continue };
+            // Better: a preferred format first, then more channels (ties keep the earlier range).
+            let better = (rank, std::cmp::Reverse(c.channels()));
+            if best.as_ref().is_none_or(|x| better < (x.3, std::cmp::Reverse(x.4))) {
+                best = Some((config.config(), *c.buffer_size(), c.sample_format(), rank, c.channels()));
+            }
+        }
+        if let Some((config, buffers, format, _, _)) = best {
+            return Some((config, buffers, format));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1036,13 +1089,12 @@ mod tests {
         fn pause(&self) -> Result<(), cpal::Error> {
             Ok(())
         }
-        /// The fake stream claims one fixed buffer.
+        /// The fake stream has no clock and no fixed buffer; neither is used by these tests.
         fn buffer_size(&self) -> Result<cpal::FrameCount, cpal::Error> {
-            Ok(1024)
+            Ok(0)
         }
-        /// The fake stream has no clock.
         fn now(&self) -> cpal::StreamInstant {
-            cpal::StreamInstant::new(0, 0)
+            cpal::StreamInstant::from_nanos(0)
         }
     }
 
@@ -1072,6 +1124,42 @@ mod tests {
         let won =
             first_started([1u32, 2], |&n| if n == 1 { Err("no such buffer size".to_string()) } else { Ok(Fake { starts: true }) }, start_stream);
         assert_eq!(won.map(|(n, _)| n), Some(2));
+    }
+
+    fn range(channels: u16, min: u32, max: u32, format: cpal::SampleFormat) -> cpal::SupportedStreamConfigRange {
+        cpal::SupportedStreamConfigRange::new(channels, min, max, cpal::SupportedBufferSize::Range { min: 64, max: 1024 }, format)
+    }
+
+    #[test]
+    fn output_config_uses_the_first_requested_rate_the_device_offers() {
+        let configs = [
+            range(2, 44_100, 48_000, cpal::SampleFormat::I16),
+            range(2, 44_100, 96_000, cpal::SampleFormat::F32),
+            range(8, 44_100, 96_000, cpal::SampleFormat::F32),
+        ];
+        let (config, buffers, format) = pick_output_config(&configs, &[96_000, 48_000], 8).unwrap();
+        assert_eq!((config.sample_rate, config.channels, config.buffer_size), (96_000, 8, cpal::BufferSize::Default));
+        assert_eq!(format, cpal::SampleFormat::F32);
+        assert_eq!(buffers, cpal::SupportedBufferSize::Range { min: 64, max: 1024 });
+        // 192 kHz is not offered: the session's 48 kHz is tried next.
+        let (config, _, format) = pick_output_config(&configs, &[192_000, 48_000], 8).unwrap();
+        assert_eq!((config.sample_rate, config.channels, format), (48_000, 8, cpal::SampleFormat::F32));
+        // No requested rate is offered: the caller uses the device's default config and resamples.
+        assert!(pick_output_config(&configs, &[192_000], 8).is_none());
+    }
+
+    #[test]
+    fn output_config_prefers_format_over_channels_and_needs_stereo_within_the_cap() {
+        let configs = [range(8, 44_100, 48_000, cpal::SampleFormat::I16), range(2, 44_100, 48_000, cpal::SampleFormat::F32)];
+        let (config, _, format) = pick_output_config(&configs, &[48_000], 8).unwrap();
+        assert_eq!((config.channels, format), (2, cpal::SampleFormat::F32), "a preferred format wins over more channels");
+        let (config, _, _) = pick_output_config(&configs, &[48_000], 2).unwrap();
+        assert_eq!(config.channels, 2, "the channel cap applies");
+        let mono = [range(1, 44_100, 48_000, cpal::SampleFormat::F32)];
+        assert!(pick_output_config(&mono, &[48_000], 8).is_none(), "a mono-only device takes the default config path");
+        let surround = [range(6, 44_100, 48_000, cpal::SampleFormat::F32)];
+        assert!(pick_output_config(&surround, &[48_000], 2).is_none(), "a wider device is not narrowed here");
+        assert_eq!(pick_output_config(&surround, &[48_000], 6).map(|(c, _, _)| c.channels), Some(6));
     }
 
     #[test]
@@ -1224,6 +1312,26 @@ mod tests {
     }
 
     #[test]
+    fn resampling_at_a_short_block_edge_does_not_mix_in_stale_frames() {
+        use soundcraft_model::ChannelFormat;
+        // DC for the first long block, then silence. The device runs slower than the session, so
+        // reads land between frames; a short block leaves the long block's DC past `pending_len`.
+        let mut st = audio_output_state(ChannelFormat::Stereo, vec![vec![0.8; BLOCK]; 2]);
+        st.device_rate = 44_100.0;
+        let mut long = vec![0.0; 2 * 470];
+        st.fill(&mut long, 2);
+        assert_eq!(st.pending_len, BLOCK);
+        let mut short = [0.0; 2 * 8];
+        for call in 0..20 {
+            st.fill(&mut short, 2);
+            assert!(st.pending_len < BLOCK);
+            // The first frame of the first short call still reads the DC block's last frame.
+            let from = if call == 0 { 2 } else { 0 };
+            assert!(short[from..].iter().all(|x| x.abs() < 1e-6), "call {call}: {short:?}");
+        }
+    }
+
+    #[test]
     fn mono_device_preserves_centered_mono_level_and_includes_surround_right_channels() {
         use soundcraft_model::ChannelFormat;
         let h = std::f32::consts::FRAC_1_SQRT_2;
@@ -1251,6 +1359,18 @@ mod tests {
         let mut out = [0.5; 128];
         st.fill(&mut out, 1);
         assert!(out.iter().all(|x| *x == 0.0), "overflow in the stereo fold-down must not send NaN to a mono device");
+    }
+
+    #[test]
+    fn interpolation_overflow_between_huge_samples_never_reaches_the_device() {
+        use soundcraft_model::ChannelFormat;
+        let alternating: Vec<f32> = (0..512).map(|i| if i % 2 == 0 { -3.4e38 } else { 3.4e38 }).collect();
+        for (format, nch, device) in [(ChannelFormat::Stereo, 2, 2), (ChannelFormat::Stereo, 2, 8), (ChannelFormat::Mono, 1, 1)] {
+            let mut st = audio_output_state(format, vec![alternating.clone(); nch]);
+            let mut out = vec![0.5; 64 * device];
+            st.fill(&mut out, device);
+            assert!(out.iter().all(|x| x.is_finite() && (-1.0..=1.0).contains(x)), "{format:?} on {device} channels: {out:?}");
+        }
     }
 
     #[test]
@@ -1368,6 +1488,55 @@ mod tests {
         assert!(side.capture_states().is_empty());
         side.open_editor(k).unwrap();
         assert_eq!(side.capture_states(), vec![(TrackId(1), 0, b"defaults".to_vec())]);
+    }
+
+    /// An editor whose plugin said its state changed (CLAP `state.mark_dirty`).
+    struct Dirty(bool);
+
+    impl PluginEditor for Dirty {
+        fn open(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        fn close(&mut self) {}
+        fn is_open(&self) -> bool {
+            true
+        }
+        fn idle(&mut self) -> Vec<(String, f32)> {
+            Vec::new()
+        }
+        fn state_changed(&mut self) -> bool {
+            std::mem::take(&mut self.0)
+        }
+    }
+
+    #[test]
+    fn changed_states_are_reported_once_and_read_for_the_session() {
+        let mut side = Side::new(48_000.0, channel().1);
+        let (a, b) = (TrackId(1), TrackId(2));
+        let synth = (a, soundcraft_mix::INSTRUMENT_SLOT);
+        side.states.insert((a, 0), Box::new(|| Some(b"a0".to_vec())));
+        side.states.insert((a, 1), Box::new(|| Some(b"a1".to_vec())));
+        side.states.insert(synth, Box::new(|| Some(b"synth".to_vec())));
+        side.states.insert((b, 0), Box::new(|| Some(b"b0".to_vec())));
+        side.editors.insert((a, 0), Box::new(Dirty(true)));
+        side.editors.insert((a, 1), Box::new(Dirty(false)));
+        side.editors.insert((b, 0), Box::new(Dirty(true)));
+        side.refused.insert((b, 0));
+        let mut changed = side.changed_states();
+        changed.sort();
+        assert_eq!(changed, vec![(a, 0), (b, 0)]);
+        assert!(side.changed_states().is_empty(), "each change is reported once");
+        let want = vec![(a, 0, b"a0".to_vec()), (a, soundcraft_mix::INSTRUMENT_SLOT, b"synth".to_vec())];
+        assert_eq!(side.capture_states_of(&[(a, 0), synth, (b, 0)]), want);
+    }
+
+    #[test]
+    fn a_state_marked_changed_while_loading_is_not_a_change() {
+        let mut side = Side::new(48_000.0, channel().1);
+        let k = (TrackId(1), 0);
+        side.states.insert(k, Box::new(|| Some(b"loaded".to_vec())));
+        side.add_editor(k, Box::new(Dirty(true)));
+        assert!(side.changed_states().is_empty());
     }
 
     #[test]

@@ -125,12 +125,15 @@ if has appimage; then
   fi
   APPDIR="$WORK/SoundCraft.AppDir"
   cp -R "$STAGE" "$APPDIR"
-  mv "$APPDIR/usr/share/doc" "$WORK/doc-unused"
   ln -s usr/bin/soundcraft "$APPDIR/AppRun"
   cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
   cp "$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/$APP_ID.png"
   ln -s "$APP_ID.png" "$APPDIR/.DirIcon"
 
+  verify_sha256() {
+    local sha="$1" file="$2"
+    printf '%s  %s\n' "$sha" "$file" | sha256sum -c -
+  }
   TOOL="${APPIMAGETOOL:-$(command -v appimagetool || true)}"
   if [[ -z "$TOOL" ]]; then
     if [[ -z "$APPIMAGETOOL_SHA256" ]]; then
@@ -142,21 +145,21 @@ if has appimage; then
       download="$TOOL.download"
       curl --proto '=https' -fsSL -o "$download" \
         "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL_VERSION/appimagetool-$ARCH.AppImage"
-      printf '%s  %s\n' "$APPIMAGETOOL_SHA256" "$download" | sha256sum -c -
+      verify_sha256 "$APPIMAGETOOL_SHA256" "$download"
       chmod 755 "$download"
       mv "$download" "$TOOL"
     fi
-    printf '%s  %s\n' "$APPIMAGETOOL_SHA256" "$TOOL" | sha256sum -c -
+    verify_sha256 "$APPIMAGETOOL_SHA256" "$TOOL"
   fi
   RUNTIME="$CARGO_TARGET_DIR/appimage-runtime-$APPIMAGE_RUNTIME_VERSION-$ARCH"
   if [[ ! -f "$RUNTIME" ]]; then
     download="$RUNTIME.download"
     curl --proto '=https' -fsSL -o "$download" \
       "https://github.com/AppImage/type2-runtime/releases/download/$APPIMAGE_RUNTIME_VERSION/runtime-$ARCH"
-    printf '%s  %s\n' "$APPIMAGE_RUNTIME_SHA256" "$download" | sha256sum -c -
+    verify_sha256 "$APPIMAGE_RUNTIME_SHA256" "$download"
     mv "$download" "$RUNTIME"
   fi
-  printf '%s  %s\n' "$APPIMAGE_RUNTIME_SHA256" "$RUNTIME" | sha256sum -c -
+  verify_sha256 "$APPIMAGE_RUNTIME_SHA256" "$RUNTIME"
   # Absolute, because appimagetool runs in $DIST below (CARGO_TARGET_DIR or APPIMAGETOOL may be
   # relative).
   OUT="$(cd "$DIST" && pwd)/$BASENAME.AppImage"

@@ -95,7 +95,7 @@ fn a_menu_opens_with_an_empty_search() {
 fn picks_without_the_search_still_close_the_menu() {
     let first = soundcraft_dsp::plugins().iter().find(|p| !p.is_instrument).unwrap();
     let other = soundcraft_dsp::plugins().iter().find(|p| p.category == first.category && p.id != first.id).unwrap();
-    let category = format!("{:?} ⏵", first.category);
+    let category = format!("{:?}", first.category);
     let mut h = harness(vox());
     for (plugin, click) in [(first, egui::PointerButton::Primary), (other, egui::PointerButton::Secondary)] {
         h.get_by_label("Insert C").click_button(click);
@@ -156,7 +156,7 @@ fn send_and_output_menus_search_buses_as_soon_as_they_open() {
     let send = h.state().engine.session().tracks[0].mixer.sends[2].clone().expect("Enter picks the bus");
     assert_eq!(send.target, Route::Bus(bus(&h, "Delay")));
 
-    open(&mut h, "Output");
+    open(&mut h, "Output for Vox");
     type_text(&mut h, "ver");
     press(&mut h, Key::Enter);
     assert_eq!(h.state().engine.session().tracks[0].mixer.output, Route::Bus(bus(&h, "Verb")));

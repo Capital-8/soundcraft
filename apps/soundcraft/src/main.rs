@@ -27,7 +27,7 @@ struct App(SoundApp, Option<&'static logging::AppLogger>, #[cfg(target_os = "mac
 
 /// Sends the title only when it changes, remembered here as X11 and Wayland can't read it back.
 fn set_title(ctx: &egui::Context, title: String) {
-    let id = egui::Id::new("window_title");
+    let id = egui::Id::unique("window_title");
     if ctx.data(|d| d.get_temp::<String>(id)).as_deref() != Some(title.as_str()) {
         ctx.data_mut(|d| d.insert_temp(id, title.clone()));
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
@@ -52,7 +52,7 @@ impl eframe::App for App {
         // Files dropped on the window: audio on an instrument track or a Sampler window loads
         // the sampler; otherwise sessions open and audio/MIDI import.
         let dropped: Vec<String> =
-            self.0.take_dropped_files(ctx).iter().map(|f| f.path().to_string_lossy().into_owned()).filter(|s| !s.is_empty()).collect();
+            self.0.take_dropped_files().iter().map(|f| f.path().to_string_lossy().into_owned()).filter(|s| !s.is_empty()).collect();
         for p in dropped {
             open_path(&mut self.0, &p);
         }
@@ -86,8 +86,8 @@ impl eframe::App for App {
         };
         set_title(ctx, title);
     }
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        self.0.raw_input_hook(raw);
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.0.raw_input_hook(ctx, raw);
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.0.guarded(|app| app.ui(ui));
@@ -112,8 +112,10 @@ fn open_path(app: &mut SoundApp, p: &str) {
     } else if lower.ends_with(".mid") || lower.ends_with(".midi") || lower.ends_with(".smf") {
         app.run("file.import_midi", serde_json::json!({"path": p}))
     } else {
+        // Decoded in the background so a long file doesn't freeze the window (#597).
         let at = app.engine.session().edit.selection.start;
-        app.run("file.import_audio", serde_json::json!({"path": p, "at": at}))
+        soundcraft_ui_egui::import::start(app, serde_json::json!({"path": p, "at": at}));
+        Ok(serde_json::Value::Null)
     };
     if let Err(e) = r {
         log::warn!("{p}: {e}");
@@ -182,7 +184,7 @@ fn services() -> Services {
             if let Some(dir) = path.parent().filter(|dir| dir.is_dir()) {
                 d = d.set_directory(dir);
             }
-            if let Some(n) = path.file_name().and_then(|n| n.to_str()) {
+            if let Some(n) = path.file_name().and_then(std::ffi::OsStr::to_str) {
                 d = d.set_file_name(n);
             }
             d.save_file().map(|p| p.to_string_lossy().into_owned())

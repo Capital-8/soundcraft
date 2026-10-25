@@ -86,10 +86,11 @@ fn escape_closes_the_send_window_after_menus_and_typing() {
         h.event(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
     }
     h.run_steps(3);
-    assert!(h.query_by_label("Pre-fader").is_some(), "the send's options menu is open");
+    // The window's own PRE toggle is a button labelled "Pre-fader"; the menu's is a checkbox.
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::CheckBox, "Pre-fader").is_some(), "the send's options menu is open");
     h.key_press(egui::Key::Escape);
     h.run_steps(3);
-    assert!(h.query_by_label("Pre-fader").is_none());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::CheckBox, "Pre-fader").is_none());
     assert_eq!(h.state().ui.send_window, Some((vox, 0)), "that Escape only closed the menu");
 
     // So does typing a level in the window.

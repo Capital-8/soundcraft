@@ -23,7 +23,7 @@ fn drag_track(app: &mut SoundApp, ui: &Ui, row: Rect, id: u64, dropped: bool) {
         let y = row.min.y + (gap - from as f32) * pitch - spacing / 2.0;
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         ui.ctx()
-            .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("track_list_reorder")))
+            .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("track_list_reorder")))
             .line_segment([pos2(row.min.x, y), pos2(row.max.x, y)], Stroke::new(2.0, Tokens::current().accent));
     }
 }
@@ -61,23 +61,31 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
         s.tracks.iter().map(|x| (x.id.0, x.name.clone(), !x.hidden, x.color, s.edit.selected_tracks.contains(&x.id))).collect()
     };
     let hidden = egui::scroll_area::ScrollBarVisibility::AlwaysHidden;
-    let lists =
-        egui::ScrollArea::vertical().id_salt("tracks_scroll").max_height(total * 0.62).auto_shrink([false, false]).scroll_bar_visibility(hidden);
+    let lists = with_pending_offset(egui::ScrollArea::vertical().id_salt("tracks_scroll"), ui, "tracks_scroll")
+        .max_height(total * 0.62)
+        .auto_shrink([false, false])
+        .scroll_bar_visibility(hidden);
     let out = lists.show(ui, |ui| {
         for (id, name, shown, color, sel) in tracks {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::click_and_drag());
-            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, sel, &name));
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, sel, &name));
             if sel {
                 ui.painter().rect_filled(r, 0.0, t.row_selected);
             }
             let dot = Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(8.0, 8.0));
-            let dresp = ui.interact(dot.expand(3.0), ui.id().with(("vis", id)), Sense::click());
+            let dresp = ui.interact(dot.expand(3.0), ui.scope_id().with(("vis", id)), Sense::click());
             ui.painter().circle(dot.center(), 3.5, if shown { t.visible_dot } else { Color32::TRANSPARENT }, Stroke::new(1.0, t.text_dim));
             if dresp.clicked() {
                 let _ = app.run("track.hide", json!({"tracks": [id], "hidden": shown}));
             }
             ui.painter().rect_filled(Rect::from_min_size(pos2(r.min.x + 20.0, r.min.y + 3.0), vec2(4.0, 11.0)), 0.0, rgb(color));
-            ui.painter().text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, &name, regular(11.5), if shown { t.text } else { t.text_dim });
+            ui.painter().with_clip_rect(r).text(
+                pos2(r.min.x + 30.0, r.center().y),
+                Align2::LEFT_CENTER,
+                &name,
+                regular(11.5),
+                if shown { t.text } else { t.text_dim },
+            );
             if resp.clicked() {
                 crate::edit_window::click_track(app, soundcraft_model::TrackId(id), ui.input(|i| i.modifiers), |_, _| true);
             }
@@ -91,11 +99,12 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
     panel_header(ui, "GROUPS");
     let groups: Vec<(u64, char, String, bool, [u8; 3])> =
         app.engine.session().groups.iter().map(|g| (g.id.0, g.letter, g.name.clone(), g.active, g.color)).collect();
-    let out = egui::ScrollArea::vertical().id_salt("groups_scroll").auto_shrink([false, false]).scroll_bar_visibility(hidden).show(ui, |ui| {
+    let groups_area = with_pending_offset(egui::ScrollArea::vertical().id_salt("groups_scroll"), ui, "groups_scroll");
+    let out = groups_area.auto_shrink([false, false]).scroll_bar_visibility(hidden).show(ui, |ui| {
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::hover());
         ui.painter().text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, "<ALL>", regular(11.5).clone(), t.text);
-        let all = ui.interact(r, ui.id().with("group_all"), Sense::click());
-        all.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "<ALL>"));
+        let all = ui.interact(r, ui.scope_id().with("group_all"), Sense::click());
+        all.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "<ALL>"));
         if all.double_clicked() {
             let _ = app.run("edit.select_all", json!({}));
         }
@@ -107,7 +116,7 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
         });
         for (id, letter, name, active, color) in groups {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::click());
-            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, active, &name));
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, active, &name));
             if active {
                 ui.painter().rect_filled(Rect::from_min_size(pos2(r.min.x + 4.0, r.min.y + 2.0), vec2(14.0, 13.0)), 1.0, rgb(color));
             }
@@ -118,7 +127,7 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
                 bold(10.0),
                 if active { t.text_dark } else { t.text_dim },
             );
-            ui.painter().text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, &name, regular(11.5), t.text);
+            ui.painter().with_clip_rect(r).text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, &name, regular(11.5), t.text);
             if resp.clicked() {
                 let _ = app.run("track.group_toggle", json!({"group": id}));
             }
@@ -150,8 +159,21 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
     gutter_scroll(ui, gutter, &out);
 }
 
+/// Apply a pending gutter page/drag target to the next frame's `ScrollArea`. `State::offset` is
+/// private in egui 0.37, so the target cannot be written directly; it is applied here before layout.
+fn with_pending_offset(area: egui::ScrollArea, ui: &Ui, salt: &str) -> egui::ScrollArea {
+    // Match `ScrollArea` exactly: it hashes an `IdSalt` into the persistent id.
+    let id = ui.make_persistent_id(egui::IdSalt::new(salt));
+    let pending = ui.ctx().memory_mut(|m| m.data.remove_temp::<f32>(id.with("gutter_target")));
+    match pending {
+        Some(y) => area.vertical_scroll_offset(y),
+        None => area,
+    }
+}
+
 /// A list's scroll thumb in the gutter beside it, when the list is longer than its space: drag it,
-/// or click above or below it to page.
+/// or click above or below it to page. The target applies on the next frame, because the public
+/// `ScrollArea` API has no way to write the current pass's offset.
 fn gutter_scroll<R>(ui: &Ui, gutter: Rect, out: &egui::scroll_area::ScrollAreaOutput<R>) {
     let t = Tokens::current();
     let (view, content) = (out.inner_rect.height(), out.content_size.y);
@@ -160,12 +182,12 @@ fn gutter_scroll<R>(ui: &Ui, gutter: Rect, out: &egui::scroll_area::ScrollAreaOu
     }
     let bar = Rect::from_x_y_ranges(gutter.x_range(), out.inner_rect.y_range());
     let (max, h) = (content - view, (bar.height() * view / content).max(20.0));
-    let mut state = out.state;
-    let thumb = Rect::from_min_size(pos2(bar.min.x + 2.0, bar.min.y + (bar.height() - h) * state.offset.y / max), vec2(bar.width() - 4.0, h));
+    let offset = out.state.clamped_offset().y;
+    let thumb = Rect::from_min_size(pos2(bar.min.x + 2.0, bar.min.y + (bar.height() - h) * offset / max), vec2(bar.width() - 4.0, h));
     let resp = ui.interact(bar, out.id.with("gutter"), Sense::click_and_drag());
     ui.painter().rect_filled(thumb, 3.0, if resp.hovered() || resp.dragged() { t.button_hi.lerp_to_gamma(Color32::WHITE, 0.1) } else { t.button_hi });
     let to = if resp.dragged() {
-        Some(state.offset.y + resp.drag_delta().y * max / (bar.height() - h).max(1.0))
+        Some(offset + resp.drag_delta().y * max / (bar.height() - h).max(1.0))
     } else if let Some(p) = resp.interact_pointer_pos().filter(|_| resp.clicked()) {
         let page = if p.y < thumb.min.y {
             -view
@@ -174,42 +196,86 @@ fn gutter_scroll<R>(ui: &Ui, gutter: Rect, out: &egui::scroll_area::ScrollAreaOu
         } else {
             0.0
         };
-        Some(state.offset.y + page)
+        Some(offset + page)
     } else {
         None
     };
     if let Some(y) = to {
-        state.offset.y = y.clamp(0.0, max);
-        state.store(ui.ctx(), out.id);
+        ui.ctx().memory_mut(|m| m.data.insert_temp(out.id.with("gutter_target"), y.clamp(0.0, max)));
+        ui.ctx().request_repaint();
     }
+}
+
+/// One row of the clip list: a whole file, or a clip on a track (positions in the session).
+#[derive(Clone, Copy)]
+enum ClipRow {
+    Source(usize),
+    Clip { track: usize, clip: usize },
+}
+
+/// The clip list's rows for one document revision and filter. A drum edit holds tens of thousands
+/// of clips: the rows are listed (and filtered) when either changes, not every frame.
+#[derive(Clone)]
+struct ClipRows {
+    revision: u64,
+    filter: String,
+    rows: std::sync::Arc<Vec<ClipRow>>,
+}
+
+fn clip_rows(s: &soundcraft_model::Session, needle: &str) -> Vec<ClipRow> {
+    let shown = |name: &str| needle.is_empty() || name.to_lowercase().contains(needle);
+    // Whole files first (bold), then clips on tracks.
+    let sources =
+        s.sources.iter().enumerate().filter(|(_, src)| shown(&format!("{} ({}ch)", src.name, src.channels))).map(|(i, _)| ClipRow::Source(i));
+    let clips =
+        s.tracks.iter().enumerate().flat_map(|(track, tr)| {
+            tr.clips().iter().enumerate().filter(|(_, c)| shown(&c.name)).map(move |(clip, _)| ClipRow::Clip { track, clip })
+        });
+    sources.chain(clips).collect()
 }
 
 pub fn clip_list(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     panel_header(ui, "CLIPS");
-    let items: Vec<(u64, String, bool, [u8; 3], bool)> = {
-        let s = app.engine.session();
-        let mut v = Vec::new();
-        // Whole files first (bold), then clips on tracks.
-        for src in &s.sources {
-            v.push((src.id.0, format!("{} ({}ch)", src.name, src.channels), true, [150, 150, 150], s.edit.selected_sources.contains(&src.id)));
-        }
-        for tr in &s.tracks {
-            for c in tr.clips() {
-                v.push((c.id.0, c.name.clone(), false, c.color.unwrap_or(tr.color), s.edit.selected_clips.contains(&c.id)));
-            }
-        }
-        v
-    };
-    let fkey = egui::Id::new("clip_filter");
+    let fkey = egui::Id::unique("clip_filter");
     let mut filter: String = ui.ctx().memory(|m| m.data.get_temp(fkey)).unwrap_or_default();
     ui.add(egui::TextEdit::singleline(&mut filter).hint_text("🔍 Find clips").desired_width(f32::INFINITY));
     ui.ctx().memory_mut(|m| m.data.insert_temp(fkey, filter.clone()));
     let needle = filter.to_lowercase();
-    let items: Vec<_> = items.into_iter().filter(|(_, n, _, _, _)| needle.is_empty() || n.to_lowercase().contains(&needle)).collect();
-    egui::ScrollArea::vertical().id_salt("clips_scroll").auto_shrink([false, false]).show(ui, |ui| {
+    let rkey = egui::Id::unique("clip_rows");
+    let revision = app.engine.revision;
+    let cached = ui.ctx().memory(|m| m.data.get_temp::<ClipRows>(rkey)).filter(|c| c.revision == revision && c.filter == needle);
+    let rows = match cached {
+        Some(c) => c.rows,
+        None => {
+            let rows = std::sync::Arc::new(clip_rows(app.engine.session(), &needle));
+            ui.ctx().memory_mut(|m| m.data.insert_temp(rkey, ClipRows { revision, filter: needle, rows: rows.clone() }));
+            rows
+        }
+    };
+    let row_h = 17.0;
+    let clips_area = with_pending_offset(egui::ScrollArea::vertical().id_salt("clips_scroll"), ui, "clips_scroll");
+    clips_area.auto_shrink([false, false]).show_rows(ui, row_h, rows.len(), |ui, shown| {
+        // Only the rows in view: what they show is read now, before any of them acts on the session.
+        let items: Vec<(u64, String, bool, [u8; 3], bool)> = {
+            let s = app.engine.session();
+            rows.get(shown)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|row| match *row {
+                    ClipRow::Source(i) => s.sources.get(i).map(|src| {
+                        (src.id.0, format!("{} ({}ch)", src.name, src.channels), true, [150, 150, 150], s.edit.selected_sources.contains(&src.id))
+                    }),
+                    ClipRow::Clip { track, clip } => {
+                        let tr = s.tracks.get(track)?;
+                        let c = tr.clips().get(clip)?;
+                        Some((c.id.0, c.name.clone(), false, c.color.unwrap_or(tr.color), s.edit.selected_clips.contains(&c.id)))
+                    }
+                })
+                .collect()
+        };
         for (id, name, whole, color, selected) in items {
-            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), if whole { Sense::click_and_drag() } else { Sense::click() });
+            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), if whole { Sense::click_and_drag() } else { Sense::click() });
             resp.context_menu(|ui| {
                 if whole {
                     if ui.button("Place on New Track").clicked() {
@@ -371,6 +437,29 @@ fn big_counter(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_big_counter = open;
 }
 
+fn memory_location_row(app: &mut SoundApp, ui: &mut Ui, n: u32, name: &str, loc: &str, len: &str, kind: &str) {
+    if ui.button(n.to_string()).on_hover_text("Recall").clicked() {
+        let _ = app.run("markers.recall", json!({"number": n}));
+    }
+    let key = egui::Id::unique(("mem_name", n));
+    let mut edit: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| name.to_string());
+    let r = crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(&mut edit).desired_width(140.0)), "Name");
+    if r.changed() {
+        ui.ctx().memory_mut(|m| m.data.insert_temp(key, edit.clone()));
+    }
+    if r.lost_focus() && edit != name {
+        let _ = app.run("markers.edit", json!({"number": n, "rename": edit}));
+        ui.ctx().memory_mut(|m| m.data.remove::<String>(key));
+    }
+    ui.label(egui::RichText::new(loc).font(mono(11.0)));
+    ui.label(egui::RichText::new(len).font(mono(11.0)));
+    ui.label(kind);
+    if crate::widgets::close_button(ui, "Delete marker").clicked() {
+        let _ = app.run("markers.delete", json!({"number": n}));
+    }
+    ui.end_row();
+}
+
 pub(crate) fn memory_locations(app: &mut SoundApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         if ui.button("+ Marker").clicked() {
@@ -402,27 +491,8 @@ pub(crate) fn memory_locations(app: &mut SoundApp, ui: &mut Ui) {
                 ui.label(egui::RichText::new(h).strong());
             }
             ui.end_row();
-            for (n, name, loc, len, kind) in rows {
-                if ui.button(n.to_string()).on_hover_text("Recall").clicked() {
-                    let _ = app.run("markers.recall", json!({"number": n}));
-                }
-                let key = egui::Id::new(("mem_name", n));
-                let mut edit: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| name.clone());
-                let r = ui.add(egui::TextEdit::singleline(&mut edit).desired_width(140.0));
-                if r.changed() {
-                    ui.ctx().memory_mut(|m| m.data.insert_temp(key, edit.clone()));
-                }
-                if r.lost_focus() && edit != name {
-                    let _ = app.run("markers.edit", json!({"number": n, "rename": edit}));
-                    ui.ctx().memory_mut(|m| m.data.remove::<String>(key));
-                }
-                ui.label(egui::RichText::new(loc).font(mono(11.0)));
-                ui.label(egui::RichText::new(len).font(mono(11.0)));
-                ui.label(kind);
-                if ui.small_button("✕").on_hover_text("Delete").clicked() {
-                    let _ = app.run("markers.delete", json!({"number": n}));
-                }
-                ui.end_row();
+            for (n, name, loc, len, kind) in &rows {
+                memory_location_row(app, ui, *n, name, loc, len, kind);
             }
         });
     });
@@ -461,7 +531,7 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
         let place = if instrument { "instrument".to_string() } else { char::from(b'a'.saturating_add(slot as u8)).to_string() };
         let mut open = true;
         let shown = egui::Window::new(format!("{tname} · {place} · {}", info.name))
-            .id(egui::Id::new(("plugin", tid.0, slot)))
+            .id(egui::Id::unique(("plugin", tid.0, slot)))
             .open(&mut open)
             .default_width(340.0)
             .default_pos(egui::pos2(ctx.content_rect().width() - 380.0, 120.0))
@@ -474,7 +544,7 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                         if ui.button(label).clicked() {
                             let _ = app.run("mix.insert_bypass", json!({"track": tid.0, "slot": slot}));
                         }
-                        ui.menu_button("Presets ▾", |ui| preset_menu(app, ui, tid, slot, info, &ins));
+                        ui.menu_button("Presets v", |ui| preset_menu(app, ui, tid, slot, info, &ins));
                     }
                     if soundcraft_mix::is_third_party(&ins.plugin) {
                         let open = app.player.as_ref().is_some_and(|p| p.editor_open(tid, slot));
@@ -510,7 +580,7 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                     egui::Grid::new(("pg", tid.0, slot)).num_columns(3).show(ui, |ui| {
                         for p in info.params {
                             let v = ins.params.get(p.id).copied().unwrap_or(p.default);
-                            ui.label(p.name);
+                            let label = ui.label(p.name);
                             let mut x = v;
                             let resp = if !p.choices.is_empty() {
                                 let mut idx = x.round().max(0.0) as usize;
@@ -533,6 +603,9 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                                 }
                                 ui.add(sl)
                             };
+                            // The grid cell's painted label is not an accesskit name; tie the
+                            // combo box or slider to it so screen readers and label queries find it.
+                            let resp = resp.labelled_by(label.id);
                             if (x - v).abs() > f32::EPSILON && instrument {
                                 let _ = app.engine.execute_merged(
                                     "mix.instrument_param",
@@ -604,7 +677,7 @@ fn about(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    let tab_id = egui::Id::new("about_tab");
+    let tab_id = egui::Id::unique("about_tab");
     egui::Window::new("About SoundCraft").open(&mut open).default_size(vec2(640.0, 420.0)).collapsible(false).show(ctx, |ui| {
         let mut tab = ui.data_mut(|d| d.get_temp::<u8>(tab_id)).unwrap_or(0);
         ui.horizontal(|ui| {
@@ -669,7 +742,7 @@ fn preset_menu(
         return;
     };
     let mut names: Vec<String> = std::fs::read_dir(&dir)
-        .map(|rd| rd.flatten().filter_map(|e| e.path().file_stem().and_then(|x| x.to_str()).map(str::to_string)).collect())
+        .map(|rd| rd.flatten().filter_map(|e| e.path().file_stem().and_then(std::ffi::OsStr::to_str).map(str::to_string)).collect())
         .unwrap_or_default();
     names.sort();
     for n in &names {
@@ -692,10 +765,10 @@ fn preset_menu(
         }
     }
     ui.separator();
-    let key = egui::Id::new(("preset_name", tid.0, slot));
+    let key = egui::Id::unique(("preset_name", tid.0, slot));
     let mut name: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| format!("{} preset", info.name));
     ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut name).desired_width(140.0));
+        crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(&mut name).desired_width(140.0)), "Preset name");
         if ui.button("Save").clicked() {
             let clean = soundcraft_engine::io::sanitize_name(&name);
             let body = json!({"format": "soundcraft-plugin-preset", "plugin": info.id, "params": ins.params});
@@ -707,4 +780,33 @@ fn preset_menu(
         }
     });
     ui.ctx().memory_mut(|m| m.data.insert_temp(key, name));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soundcraft_model::{ChannelFormat, Clip, Session, TrackKind};
+
+    #[test]
+    fn clip_rows_list_every_clip_in_track_order_and_filter_by_name() {
+        let mut s = Session::default();
+        for names in [["Kick 1", "Snare 1"], ["Kick 2", "Tom"]] {
+            let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+            for (i, n) in names.into_iter().enumerate() {
+                let c = Clip::audio(s.new_clip_id(), n, SourceId(1), 0, i as i64 * 100, 100);
+                s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(c);
+            }
+        }
+        let names = |rows: Vec<ClipRow>| -> Vec<String> {
+            rows.into_iter()
+                .filter_map(|r| match r {
+                    ClipRow::Clip { track, clip } => Some(s.tracks[track].clips()[clip].name.clone()),
+                    ClipRow::Source(_) => None,
+                })
+                .collect()
+        };
+        assert_eq!(names(clip_rows(&s, "")), ["Kick 1", "Snare 1", "Kick 2", "Tom"]);
+        assert_eq!(names(clip_rows(&s, "kick")), ["Kick 1", "Kick 2"]);
+        assert!(clip_rows(&s, "cowbell").is_empty());
+    }
 }

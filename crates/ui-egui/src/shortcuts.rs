@@ -241,7 +241,7 @@ fn edit_mode_key(app: &mut SoundApp, pressed: Key) {
     let ed = &app.engine.session().edit;
     let keep_grid = ed.edit_mode.is_grid() && ed.flag("options.edit_tool_mode_keyboard_lock");
     // F4 pressed first in an F4+F1–F3 chord switched the Grid mode on its own; put that back.
-    let flipped = egui::Id::new("edit_mode_key_grid_before_f4");
+    let flipped = egui::Id::unique("edit_mode_key_grid_before_f4");
     let before =
         (ed.edit_mode.is_grid() && !keep_grid).then(|| if ed.flag(soundcraft_engine::edit::RELATIVE_GRID) { "relative_grid" } else { "grid" });
     let restore = match &ctx {
