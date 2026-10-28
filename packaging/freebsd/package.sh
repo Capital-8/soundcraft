@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build and package SoundCraft for FreeBSD:
 #
-#   $DIST/soundcraft-<version>-freebsd-x86_64.tar.gz   a /usr/local-style tree:
-#       soundcraft-<version>-freebsd-x86_64/{bin, man/man1, share/applications, share/icons,
+#   $DIST/soundcraft-<version>-freebsd-<arch>.tar.gz   a /usr/local-style tree (<arch> is x86_64, or
+#       aarch64 when CARGO_BUILD_TARGET=aarch64-unknown-freebsd):
+#       soundcraft-<version>-freebsd-<arch>/{bin, man/man1, share/applications, share/icons,
 #       share/mime, share/metainfo, share/doc/soundcraft, share/{bash-completion,zsh,fish}}
 #
 # Install by copying the tree's contents into /usr/local, e.g.
